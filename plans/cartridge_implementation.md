@@ -178,9 +178,15 @@ T7b ──────┴─ T7c ─┘
 - Added a standalone demo workflow for single-corpus cartridge Q&A:
   - `scripts/demo_cartridge_qa.py build` compresses one source file into one cartridge artifact.
   - `scripts/demo_cartridge_qa.py ask` reloads that artifact and answers repeated questions from the same corpus, with optional full-context comparison.
+- Extended the demo build path with explicit bootstrap-question distillation:
+  - `--bootstrap-question` / `--bootstrap-question-file` let the cartridge train directly on a supplied question set from the same corpus.
+  - `scripts/run_demo_example.py` runs a checked-in example using `examples/demo_corpus.txt` and `examples/demo_questions.txt`.
 - Verified the demo workflow on April 3, 2026 against `plans/cartridge_implementation.md` using:
   - `build` with 2 synthesis samples and 2 train steps on GPU 3.
   - `ask --show-baseline` using the saved manifest at `/tmp/demo_cartridge_plan/demo_manifest.json`.
+- Verified the checked-in example workflow on April 3, 2026 using `/tmp/demo_example_checked/demo_results.json`:
+  - cartridge answers matched full-context answers on all 3 example questions.
+  - canonical KV bytes dropped from about `36.0-37.3 MB` full-context to `18.9 MB` for the cartridge.
 
 ## Sources
 - [Cartridges paper](https://arxiv.org/abs/2506.06266)

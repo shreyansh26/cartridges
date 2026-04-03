@@ -30,6 +30,22 @@ def _read_questions(args: argparse.Namespace) -> list[str]:
     return questions
 
 
+def _read_optional_questions(
+    question_args: list[str] | None,
+    question_file: str | None,
+) -> list[str]:
+    questions: list[str] = []
+    for question in question_args or []:
+        if question.strip():
+            questions.append(question.strip())
+    if question_file:
+        for line in Path(question_file).read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line:
+                questions.append(line)
+    return questions
+
+
 def _write_output(payload: object, output_path: str | None) -> None:
     rendered = json.dumps(payload, indent=2, sort_keys=True)
     if output_path:
@@ -50,6 +66,11 @@ def _run_build(args: argparse.Namespace) -> int:
         stride_tokens=args.stride_tokens,
         synthesis_num_samples=args.synthesis_num_samples,
         synthesis_top_logprobs=args.synthesis_top_logprobs,
+        bootstrap_questions=_read_optional_questions(
+            args.bootstrap_question,
+            args.bootstrap_question_file,
+        ),
+        bootstrap_max_completion_tokens=args.bootstrap_max_completion_tokens,
         cartridge_tokens=args.cartridge_tokens,
         train_steps=args.train_steps,
         synthesis_max_completion_tokens_a=args.synthesis_max_completion_tokens_a,
@@ -142,6 +163,9 @@ def main() -> int:
     build_parser.add_argument("--stride-tokens", type=int, default=None)
     build_parser.add_argument("--synthesis-num-samples", type=int, default=8)
     build_parser.add_argument("--synthesis-top-logprobs", type=int, default=5)
+    build_parser.add_argument("--bootstrap-question", action="append", default=[])
+    build_parser.add_argument("--bootstrap-question-file", default=None)
+    build_parser.add_argument("--bootstrap-max-completion-tokens", type=int, default=128)
     build_parser.add_argument("--cartridge-tokens", type=int, default=256)
     build_parser.add_argument("--train-steps", type=int, default=30)
     build_parser.add_argument("--synthesis-max-completion-tokens-a", type=int, default=64)
