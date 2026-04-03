@@ -1,0 +1,19 @@
+mode: smoke
+source_path: cartridges_ref/examples/arxiv/cartridges.tex
+max_seq_length: 768
+niah_num_samples: 2
+synthesis_num_samples: 2
+synthesis_top_logprobs: 5
+synthesis_max_context_slices: 2
+train_steps: 20
+cartridge_tokens: 256
+baseline_max_samples: 2
+cartridge_eval_max_samples: 2
+max_completion_tokens: 48
+synthesis_max_completion_tokens_a: 16
+synthesis_max_completion_tokens_b: 64
+vllm:
+  host: 127.0.0.1
+  port: 8000
+  max_model_len: 1024
+  api_key: cartridges-local
