@@ -28,6 +28,16 @@ class TrainingExample:
     assistant_supervision: list[dict[str, Any]]
 
 
+def _set_training_seed(seed: int) -> None:
+    random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    if hasattr(torch.backends, "cudnn"):
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+
 def load_training_examples(path: str | Path) -> list[TrainingExample]:
     rows: list[TrainingExample] = []
     with Path(path).open("r", encoding="utf-8") as handle:
@@ -87,6 +97,61 @@ def _sparse_distillation_loss(
     return torch.stack(token_losses).mean()
 
 
+def _compute_example_loss(
+    *,
+    model,
+    tokenizer,
+    cartridge: TrainableKVCartridge,
+    example: TrainingExample,
+    device: str,
+) -> torch.Tensor:
+    prompt_ids = _training_prompt(tokenizer, example.user_message).to(device)
+    if len(example.assistant_token_ids) > 1:
+        assistant_prefix = torch.tensor(
+            [example.assistant_token_ids[:-1]],
+            device=device,
+            dtype=prompt_ids.dtype,
+        )
+        model_input = torch.cat([prompt_ids, assistant_prefix], dim=-1)
+    else:
+        model_input = prompt_ids
+
+    outputs = model(
+        input_ids=model_input,
+        past_key_values=cartridge.as_cache(model.config),
+        use_cache=False,
+    )
+    target_len = len(example.assistant_token_ids)
+    start_idx = prompt_ids.shape[-1] - 1
+    end_idx = start_idx + target_len
+    assistant_logits = outputs.logits[0, start_idx:end_idx, :]
+    return _sparse_distillation_loss(assistant_logits, example.assistant_supervision)
+
+
+def _evaluate_examples_loss(
+    *,
+    model,
+    tokenizer,
+    cartridge: TrainableKVCartridge,
+    examples: list[TrainingExample],
+    device: str,
+) -> float:
+    if not examples:
+        raise ValueError("Validation examples must not be empty.")
+    losses: list[float] = []
+    with torch.inference_mode():
+        for example in examples:
+            loss = _compute_example_loss(
+                model=model,
+                tokenizer=tokenizer,
+                cartridge=cartridge,
+                example=example,
+                device=device,
+            )
+            losses.append(float(loss.item()))
+    return sum(losses) / len(losses)
+
+
 def _save_checkpoint(
     *,
     path: str | Path,
@@ -138,20 +203,37 @@ def train_cartridge(
     device: str = "cuda:0",
     cartridge_tokens: int = 256,
     num_frozen_tokens: int = 1,
-    learning_rate: float = 1e-2,
+    learning_rate: float = 3e-3,
     steps: int = 20,
     gradient_accumulation_steps: int = 1,
     resume_from: str | Path | None = None,
+    max_grad_norm: float = 1.0,
+    seed: int = 0,
+    validation_examples: int = 16,
+    validation_interval: int = 10,
 ) -> dict[str, Any]:
+    if steps <= 0:
+        raise ValueError("steps must be positive.")
+    if gradient_accumulation_steps <= 0:
+        raise ValueError("gradient_accumulation_steps must be positive.")
+    if validation_examples <= 0:
+        raise ValueError("validation_examples must be positive.")
+    if validation_interval <= 0:
+        raise ValueError("validation_interval must be positive.")
+
     examples = load_training_examples(dataset_path)
     if slice_id is None:
         slice_id = examples[0].slice_id
     examples = [example for example in examples if example.slice_id == slice_id]
     if not examples:
         raise ValueError(f"No examples found for slice_id={slice_id}.")
+    validation_subset = examples[: min(validation_examples, len(examples))]
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    if resume_from is None:
+        _set_training_seed(seed)
 
     tokenizer = AutoTokenizer.from_pretrained(DEFAULT_MATRIX.model_id)
     model = AutoModelForCausalLM.from_pretrained(
@@ -170,6 +252,9 @@ def train_cartridge(
         "cartridge_tokens": cartridge_tokens,
         "num_frozen_tokens": num_frozen_tokens,
         "model_id": DEFAULT_MATRIX.model_id,
+        "seed": seed,
+        "validation_examples": len(validation_subset),
+        "validation_interval": validation_interval,
     }
 
     if resume_from is not None:
@@ -200,47 +285,57 @@ def train_cartridge(
 
     optimizer.zero_grad(set_to_none=True)
     best_loss = float("inf")
+    best_train_loss = float("inf")
     best_step = start_step
     best_state_dict = deepcopy(cartridge.state_dict())
+    validation_history: list[dict[str, float | int]] = []
     for step_idx in range(start_step, steps):
         example = examples[step_idx % len(examples)]
-        prompt_ids = _training_prompt(tokenizer, example.user_message).to(device)
-        if len(example.assistant_token_ids) > 1:
-            assistant_prefix = torch.tensor(
-                [example.assistant_token_ids[:-1]],
-                device=device,
-                dtype=prompt_ids.dtype,
-            )
-            model_input = torch.cat([prompt_ids, assistant_prefix], dim=-1)
-        else:
-            model_input = prompt_ids
-
-        outputs = model(
-            input_ids=model_input,
-            past_key_values=cartridge.as_cache(model.config),
-            use_cache=False,
+        loss = _compute_example_loss(
+            model=model,
+            tokenizer=tokenizer,
+            cartridge=cartridge,
+            example=example,
+            device=device,
         )
-        target_len = len(example.assistant_token_ids)
-        start_idx = prompt_ids.shape[-1] - 1
-        end_idx = start_idx + target_len
-        assistant_logits = outputs.logits[0, start_idx:end_idx, :]
-        loss = _sparse_distillation_loss(assistant_logits, example.assistant_supervision)
         loss_value = float(loss.item())
         loss_history.append(loss_value)
-        if loss_value < best_loss:
-            best_loss = loss_value
-            best_step = step_idx + 1
-            best_state_dict = {
-                key: value.detach().cpu().clone()
-                for key, value in cartridge.state_dict().items()
-            }
         (loss / gradient_accumulation_steps).backward()
 
         should_step = ((step_idx - start_step + 1) % gradient_accumulation_steps) == 0
         if should_step:
+            torch.nn.utils.clip_grad_norm_(cartridge.parameters(), max_grad_norm)
             optimizer.step()
             scheduler.step()
             optimizer.zero_grad(set_to_none=True)
+            completed_step = step_idx + 1
+            should_validate = (
+                completed_step == steps
+                or (completed_step % validation_interval) == 0
+            )
+            if should_validate:
+                validation_loss = _evaluate_examples_loss(
+                    model=model,
+                    tokenizer=tokenizer,
+                    cartridge=cartridge,
+                    examples=validation_subset,
+                    device=device,
+                )
+                validation_history.append(
+                    {
+                        "step": completed_step,
+                        "validation_loss": validation_loss,
+                        "recent_train_loss": loss_value,
+                    }
+                )
+                if validation_loss < best_loss:
+                    best_loss = validation_loss
+                    best_train_loss = loss_value
+                    best_step = completed_step
+                    best_state_dict = {
+                        key: value.detach().cpu().clone()
+                        for key, value in cartridge.state_dict().items()
+                    }
 
     final_cartridge_path = output_dir / f"{slice_id}_final_cartridge.pt"
     cartridge_path = output_dir / f"{slice_id}_cartridge.pt"
@@ -267,9 +362,11 @@ def train_cartridge(
         "steps": steps,
         "initial_loss": loss_history[0],
         "best_loss": best_loss,
+        "best_train_loss": best_train_loss,
         "best_step": best_step,
         "final_loss": loss_history[-1],
         "loss_history": loss_history,
+        "validation_history": validation_history,
         "loss_decreased": loss_history[-1] < loss_history[0],
         "manifest_hash": stable_hash(
             {
@@ -278,6 +375,7 @@ def train_cartridge(
                 "cartridge_path": str(cartridge_path.resolve()),
                 "checkpoint_path": str(checkpoint_path.resolve()),
                 "steps": steps,
+                "seed": seed,
                 "initial_loss": loss_history[0],
                 "final_loss": loss_history[-1],
             }

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from cartridges.eval.cartridge import _clean_completion
 from cartridges.eval.common import build_cartridge_messages, build_messages
 
 
@@ -27,3 +28,7 @@ def test_build_cartridge_messages_uses_user_only_prompt() -> None:
             "content": "/no_think\nWhere is India located?\n\nAnswer with only the region.",
         }
     ]
+
+
+def test_clean_completion_strips_assistant_prefixes() -> None:
+    assert _clean_completion("Assistant: Assistant: The Arabian Sea.") == "The Arabian Sea."

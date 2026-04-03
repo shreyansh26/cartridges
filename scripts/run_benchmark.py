@@ -139,6 +139,11 @@ def main() -> int:
     parser.add_argument("--bootstrap-count", type=int, default=120)
     parser.add_argument("--cartridge-tokens", nargs="+", type=int, default=[1024])
     parser.add_argument("--train-steps", type=int, default=240)
+    parser.add_argument("--train-learning-rate", type=float, default=3e-3)
+    parser.add_argument("--train-max-grad-norm", type=float, default=1.0)
+    parser.add_argument("--train-validation-examples", type=int, default=16)
+    parser.add_argument("--train-validation-interval", type=int, default=10)
+    parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--max-completion-tokens", type=int, default=48)
     parser.add_argument("--max-context-tokens", type=int, default=8192)
     parser.add_argument("--semantic-judge", action="store_true")
@@ -241,7 +246,12 @@ def main() -> int:
             slice_id=slice_id,
             device=args.device,
             cartridge_tokens=cartridge_tokens,
+            learning_rate=args.train_learning_rate,
             steps=args.train_steps,
+            max_grad_norm=args.train_max_grad_norm,
+            seed=args.seed,
+            validation_examples=args.train_validation_examples,
+            validation_interval=args.train_validation_interval,
         )
         train_seconds = time.perf_counter() - train_started
         cartridge_predictions_path = budget_dir / "predictions.jsonl"

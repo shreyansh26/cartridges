@@ -124,9 +124,15 @@ def test_train_cartridge_saves_best_checkpoint(tmp_path) -> None:
     dataset_path.write_text(json.dumps(row) + "\n", encoding="utf-8")
 
     losses = iter([0.5, 0.1, 0.4])
+    validation_losses = iter([0.4, 0.2, 0.3])
+
     def fake_loss(_logits, _supervision):
         value = next(losses)
         return torch.tensor(value, dtype=torch.float32, requires_grad=True)
+
+    def fake_validation_loss(*, model, tokenizer, cartridge, examples, device):
+        del model, tokenizer, cartridge, examples, device
+        return next(validation_losses)
 
     def fake_step(self):
         for group in self.param_groups:
@@ -148,6 +154,7 @@ def test_train_cartridge_saves_best_checkpoint(tmp_path) -> None:
         patch.object(train_module, "AutoModelForCausalLM") as model_cls,
         patch.object(train_module, "initialize_from_prefix_text", side_effect=fake_initialize_from_prefix_text),
         patch.object(train_module, "_sparse_distillation_loss", side_effect=fake_loss),
+        patch.object(train_module, "_evaluate_examples_loss", side_effect=fake_validation_loss),
         patch.object(train_module.AdamW, "step", fake_step),
         patch.object(train_module.AdamW, "zero_grad", fake_zero_grad),
         patch.object(train_module.LambdaLR, "step", fake_scheduler_step),
@@ -159,11 +166,13 @@ def test_train_cartridge_saves_best_checkpoint(tmp_path) -> None:
             output_dir=tmp_path / "out",
             device="cpu",
             steps=3,
+            validation_interval=1,
         )
 
     best_cartridge = torch.load(summary["cartridge_path"], map_location="cpu", weights_only=False)
     final_cartridge = torch.load(summary["final_cartridge_path"], map_location="cpu", weights_only=False)
     assert summary["best_step"] == 2
-    assert math.isclose(summary["best_loss"], 0.1, rel_tol=0.0, abs_tol=1e-6)
-    assert best_cartridge["weight"] == 1.0
+    assert math.isclose(summary["best_loss"], 0.2, rel_tol=0.0, abs_tol=1e-6)
+    assert math.isclose(summary["best_train_loss"], 0.1, rel_tol=0.0, abs_tol=1e-6)
+    assert best_cartridge["weight"] == 2.0
     assert final_cartridge["weight"] == 3.0

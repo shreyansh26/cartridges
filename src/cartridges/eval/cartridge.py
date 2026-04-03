@@ -38,6 +38,7 @@ def _clean_completion(text: str) -> str:
     text = text.replace("<think>", " ").replace("</think>", " ")
     if text.startswith("<think>"):
         text = text.removeprefix("<think>").strip()
+    text = re.sub(r"^(?:assistant:\s*)+", "", text, flags=re.IGNORECASE)
     return re.sub(r"\s+", " ", text).strip()
 
 
