@@ -191,7 +191,7 @@ def main() -> int:
     try:
         if managed_server:
             _wait_for_server(base_url=base_url, api_key=args.api_key)
-        bootstrap_questions = generate_bootstrap_questions(
+        bootstrap_examples = generate_bootstrap_questions(
             corpus_text=corpus_text,
             eval_spec=eval_spec,
             output_path=bootstrap_questions_path,
@@ -201,7 +201,7 @@ def main() -> int:
         )
         teacher_answers = generate_teacher_answers(
             corpus_text=corpus_text,
-            questions=bootstrap_questions,
+            bootstrap_examples=bootstrap_examples,
             output_path=teacher_answers_path,
             base_url=base_url,
             api_key=args.api_key,
@@ -257,7 +257,7 @@ def main() -> int:
             cartridge_path=cartridge_predictions_path,
             output_dir=budget_dir / "report",
             build_seconds=preparation_seconds + train_seconds,
-            bootstrap_question_count=len(bootstrap_questions),
+            bootstrap_question_count=len(bootstrap_examples),
             train_steps=args.train_steps,
             cartridge_tokens=cartridge_tokens,
         )

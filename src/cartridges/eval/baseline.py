@@ -34,6 +34,7 @@ def _sync_if_cuda(device: str) -> None:
 
 def _clean_completion(text: str) -> str:
     text = re.sub(r"<think>.*?</think>", " ", text, flags=re.DOTALL)
+    text = text.replace("<think>", " ").replace("</think>", " ")
     if text.startswith("<think>"):
         text = text.removeprefix("<think>").strip()
     return re.sub(r"\s+", " ", text).strip()

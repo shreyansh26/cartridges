@@ -54,6 +54,7 @@ def _training_prompt(tokenizer, user_message: str) -> torch.Tensor:
         [{"role": "user", "content": user_message}],
         tokenize=False,
         add_generation_prompt=True,
+        chat_template_kwargs={"enable_thinking": False},
     )
     return tokenizer(prompt_text, return_tensors="pt", add_special_tokens=False)["input_ids"]
 

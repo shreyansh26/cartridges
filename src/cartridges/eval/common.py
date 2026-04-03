@@ -15,12 +15,6 @@ SYSTEM_PROMPT = """Please answer the user's question using only the provided con
 
 Follow the requested answer format exactly. Do not emit <think> tags or chain-of-thought."""
 
-CARTRIDGE_SYSTEM_PROMPT = """Please answer the user's question using the
-cartridge-compressed context.
-
-Follow the requested answer format exactly. Do not emit <think> tags or chain-of-thought."""
-
-
 class EvalRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -69,10 +63,7 @@ def build_messages(row: dict[str, Any]) -> list[dict[str, str]]:
 
 def build_cartridge_messages(row: dict[str, Any]) -> list[dict[str, str]]:
     user_prompt = f"/no_think\n{row['query']}\n\n{row['answer_prompt']}"
-    return [
-        {"role": "system", "content": CARTRIDGE_SYSTEM_PROMPT},
-        {"role": "user", "content": user_prompt},
-    ]
+    return [{"role": "user", "content": user_prompt}]
 
 
 def canonical_kv_bytes(
@@ -95,6 +86,7 @@ def canonical_kv_bytes(
 
 def normalize_prediction(text: str) -> list[str]:
     cleaned = re.sub(r"<think>.*?</think>", " ", text, flags=re.DOTALL)
+    cleaned = cleaned.replace("<think>", " ").replace("</think>", " ")
     number_matches = re.findall(r"\d+", cleaned)
     if number_matches:
         return sorted(number_matches)

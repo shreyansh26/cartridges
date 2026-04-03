@@ -80,6 +80,27 @@ def _content_passages(corpus_text: str) -> list[str]:
     return passages
 
 
+BOOTSTRAP_ANSWER_PROMPT = (
+    "Answer with only the shortest exact phrase copied from the context "
+    "that fully answers the question."
+)
+
+
+def _clean_assistant_text(text: str) -> str:
+    cleaned = re.sub(r"<think>.*?</think>", " ", text, flags=re.DOTALL)
+    if cleaned.startswith("<think>"):
+        cleaned = cleaned.removeprefix("<think>").strip()
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _assistant_target_token_ids(tokenizer, assistant_text: str) -> list[int]:
+    assistant_token_ids = tokenizer.encode(assistant_text, add_special_tokens=False)
+    eos_token_id = tokenizer.eos_token_id
+    if eos_token_id is None:
+        raise ValueError("Tokenizer must expose an eos_token_id for cartridge training.")
+    return assistant_token_ids + [int(eos_token_id)]
+
+
 def generate_bootstrap_questions(
     *,
     corpus_text: str,
@@ -90,10 +111,10 @@ def generate_bootstrap_questions(
     num_questions: int,
     batch_size: int = 20,
     max_rounds: int = 40,
-) -> list[str]:
+) -> list[dict[str, str]]:
     forbidden = {item["query"].strip().lower() for item in eval_spec}
     client = VLLMClient(base_url=base_url, api_key=api_key)
-    generated: list[str] = []
+    generated: list[dict[str, str]] = []
     seen = set(forbidden)
     passages = _content_passages(corpus_text)
     if not passages:
@@ -143,7 +164,12 @@ def generate_bootstrap_questions(
                     if lowered in seen:
                         continue
                     seen.add(lowered)
-                    generated.append(question)
+                    generated.append(
+                        {
+                            "question": question,
+                            "expected_answer": answer,
+                        }
+                    )
                     if len(generated) >= num_questions:
                         break
     finally:
@@ -157,60 +183,44 @@ def generate_bootstrap_questions(
         )
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text("\n".join(generated) + "\n", encoding="utf-8")
+    output_path.write_text(
+        "\n".join(item["question"] for item in generated) + "\n",
+        encoding="utf-8",
+    )
     return generated
 
 
 def generate_teacher_answers(
     *,
     corpus_text: str,
-    questions: list[str],
+    bootstrap_examples: list[dict[str, str]],
     output_path: str | Path,
     base_url: str,
     api_key: str,
     max_completion_tokens: int,
 ) -> list[dict[str, str]]:
-    if not questions:
+    del corpus_text
+    del base_url
+    del api_key
+    del max_completion_tokens
+
+    if not bootstrap_examples:
         return []
 
-    client = VLLMClient(
-        base_url=base_url,
-        api_key=api_key,
-        model_id=DEFAULT_MATRIX.model_id,
-    )
     answer_records: list[dict[str, str]] = []
-    system_prompt = (
-        "Please answer the user's question using only the provided context.\n\n"
-        f"<context>\n{corpus_text}\n</context>\n\n"
-        "Follow the requested answer format exactly. Do not emit <think> tags or chain-of-thought."
-    )
-    try:
-        parity = client.probe_tokenizer_parity()
-        if not parity.matches:
-            raise RuntimeError(
-                "Tokenizer mismatch between local HF and vLLM during teacher answer generation."
-            )
-        for question in questions:
-            cleaned_question = question.strip()
-            assistant_turn = client.chat(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": f"/no_think\n{cleaned_question}"},
-                ],
-                max_completion_tokens=max_completion_tokens,
-                temperature=0.0,
-                top_logprobs=None,
-                run_mode="smoke",
-            )
-            answer_records.append(
-                {
-                    "question": cleaned_question,
-                    "user_message": f"/no_think\n{cleaned_question}",
-                    "assistant_text": assistant_turn.text.strip(),
-                }
-            )
-    finally:
-        client.close()
+    for example in bootstrap_examples:
+        cleaned_question = example["question"].strip()
+        expected_answer = _clean_assistant_text(example["expected_answer"])
+        if not cleaned_question or not expected_answer:
+            continue
+        answer_records.append(
+            {
+                "question": cleaned_question,
+                "user_message": f"/no_think\n{cleaned_question}\n\n{BOOTSTRAP_ANSWER_PROMPT}",
+                "assistant_text": expected_answer,
+                "expected_answer": expected_answer,
+            }
+        )
     write_jsonl(Path(output_path), answer_records)
     return answer_records
 
@@ -245,11 +255,7 @@ def build_training_dataset(
     with torch.inference_mode():
         for answer_record in answer_records:
             user_message = answer_record["user_message"]
-            assistant_text = answer_record["assistant_text"].strip()
-            assistant_text = re.sub(r"<think>.*?</think>", " ", assistant_text, flags=re.DOTALL)
-            if assistant_text.startswith("<think>"):
-                assistant_text = assistant_text.removeprefix("<think>").strip()
-            assistant_text = re.sub(r"\s+", " ", assistant_text).strip()
+            assistant_text = _clean_assistant_text(answer_record["assistant_text"])
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},
@@ -261,38 +267,45 @@ def build_training_dataset(
                 chat_template_kwargs={"enable_thinking": False},
             )
             prompt_ids = tokenizer.encode(prompt_text, add_special_tokens=False)
-            assistant_token_ids = tokenizer.encode(assistant_text, add_special_tokens=False)
-            if not assistant_token_ids:
+            assistant_token_ids = _assistant_target_token_ids(tokenizer, assistant_text)
+            if len(assistant_token_ids) <= 1:
                 continue
 
             input_ids = torch.tensor(
-                [prompt_ids + assistant_token_ids],
+                [prompt_ids + assistant_token_ids[:-1]],
                 device=device,
                 dtype=torch.long,
             )
             logits = model(input_ids=input_ids).logits
             response_start = len(prompt_ids)
-            response_end = response_start + len(assistant_token_ids)
-            response_logits = logits[:, response_start - 1 : response_end - 1, :]
+            response_end = response_start + len(assistant_token_ids) - 1
+            response_logits = logits[:, response_start - 1 : response_end, :]
             log_probs = torch.log_softmax(response_logits, dim=-1)
-            target_ids = input_ids[:, response_start:response_end]
+            target_ids = torch.tensor(
+                [assistant_token_ids],
+                device=device,
+                dtype=torch.long,
+            )
             target_log_probs = log_probs.gather(-1, target_ids.unsqueeze(-1)).squeeze(0).squeeze(-1)
             top_values, top_indices = torch.topk(log_probs.squeeze(0), k=top_logprobs, dim=-1)
 
             supervision = []
             for row_idx, token_id in enumerate(assistant_token_ids):
                 supervision.append(
-                    {
-                        "token": tokenizer.decode([token_id]),
-                        "token_id": token_id,
-                        "logprob": float(target_log_probs[row_idx]),
-                        "source": "hf_teacher",
-                        "top_logprobs": [
-                            {
-                                "token": tokenizer.decode([candidate_id]),
-                                "token_id": int(candidate_id),
-                                "logprob": float(candidate_logprob),
-                            }
+                        {
+                            "token": tokenizer.decode([token_id], skip_special_tokens=False),
+                            "token_id": token_id,
+                            "logprob": float(target_log_probs[row_idx]),
+                            "source": "hf_teacher",
+                            "top_logprobs": [
+                                {
+                                    "token": tokenizer.decode(
+                                        [candidate_id],
+                                        skip_special_tokens=False,
+                                    ),
+                                    "token_id": int(candidate_id),
+                                    "logprob": float(candidate_logprob),
+                                }
                             for candidate_id, candidate_logprob in zip(
                                 top_indices[row_idx].tolist(),
                                 top_values[row_idx].tolist(),
@@ -323,6 +336,7 @@ def build_training_dataset(
                     "row_hash": row_hash,
                     "metadata": {
                         "question": answer_record["question"],
+                        "expected_answer": answer_record.get("expected_answer"),
                         "logprob_source": "hf_teacher",
                     },
                 }
