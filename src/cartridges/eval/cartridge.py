@@ -182,6 +182,7 @@ def run_cartridge_eval(
                     metadata={
                         "sample_id": row["sample_id"],
                         "question_id": row.get("question_id"),
+                        "query": row["query"],
                         "baseline_canonical_kv_bytes": baseline_bytes,
                         "device": device,
                         "cartridge_path": str(Path(cartridge_path).resolve()),

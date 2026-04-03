@@ -110,6 +110,7 @@ def run_vllm_quality_eval(
                     metadata={
                         "sample_id": row["sample_id"],
                         "question_id": row.get("question_id"),
+                        "query": row["query"],
                         "finish_reason": result.finish_reason,
                         "logprob_source": result.logprob_source,
                     },
@@ -215,6 +216,7 @@ def run_local_hf_matched_eval(
                     metadata={
                         "sample_id": row["sample_id"],
                         "question_id": row.get("question_id"),
+                        "query": row["query"],
                         "device": device,
                     },
                 )

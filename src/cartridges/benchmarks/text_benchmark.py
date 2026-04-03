@@ -13,6 +13,15 @@ from cartridges.clients import VLLMClient
 from cartridges.config import DEFAULT_MATRIX
 from cartridges.data.common import stable_hash, write_json, write_jsonl
 
+JUDGE_SYSTEM_PROMPT = """You are a strict answer-equivalence judge.
+
+Determine whether the candidate answer means the same thing as any reference answer for the given question.
+Use only the question and answer texts provided. Do not use outside world knowledge, corpus knowledge, or unstated assumptions.
+Ignore harmless differences in articles, casing, punctuation, or short explanatory wrappers when the same answer is clearly present.
+If the candidate changes the meaning, gives a different entity or value, adds contradictory information, or is not clearly the same answer, choose DIFFERENT.
+
+Respond with exactly SAME or DIFFERENT."""
+
 
 def _parse_question_answer_lines(text: str) -> list[tuple[str, str]]:
     text = re.sub(r"<think>.*?</think>", " ", text, flags=re.DOTALL)
@@ -351,6 +360,85 @@ def _safe_mean(values: list[float]) -> float | None:
     return float(mean(values))
 
 
+class SemanticEquivalenceJudge:
+    def __init__(self, *, device: str, model_id: str = DEFAULT_MATRIX.model_id) -> None:
+        self.device = device
+        self.tokenizer = AutoTokenizer.from_pretrained(model_id)
+        self.model = AutoModelForCausalLM.from_pretrained(
+            model_id,
+            dtype=torch.bfloat16 if device.startswith("cuda") else torch.float32,
+            attn_implementation="sdpa",
+        )
+        self.model.to(device)
+        self.model.eval()
+
+    def close(self) -> None:
+        del self.model
+        if self.device.startswith("cuda"):
+            torch.cuda.empty_cache()
+
+    def _render_prompt(
+        self,
+        *,
+        question: str,
+        references: list[str],
+        candidate: str,
+    ) -> str:
+        reference_lines = "\n".join(f"- {item}" for item in references)
+        messages = [
+            {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": (
+                    f"Question:\n{question}\n\n"
+                    f"Reference answers:\n{reference_lines}\n\n"
+                    f"Candidate answer:\n{candidate}\n\n"
+                    "Are the candidate answer and any reference answer semantically the same?"
+                ),
+            },
+        ]
+        return self.tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            chat_template_kwargs={"enable_thinking": False},
+        )
+
+    def _label_score(self, prompt_text: str, label: str) -> float:
+        prompt_ids = self.tokenizer.encode(prompt_text, add_special_tokens=False)
+        label_ids = self.tokenizer.encode(label, add_special_tokens=False)
+        input_ids = torch.tensor(
+            [prompt_ids + label_ids],
+            device=self.device,
+            dtype=torch.long,
+        )
+        with torch.inference_mode():
+            logits = self.model(input_ids=input_ids).logits
+            label_start = len(prompt_ids) - 1
+            label_end = label_start + len(label_ids)
+            label_logits = logits[:, label_start:label_end, :]
+            log_probs = torch.log_softmax(label_logits, dim=-1)
+            target_ids = torch.tensor([label_ids], device=self.device, dtype=torch.long)
+            gathered = log_probs.gather(-1, target_ids.unsqueeze(-1)).squeeze(0).squeeze(-1)
+        return float(gathered.sum().item())
+
+    def is_equivalent(
+        self,
+        *,
+        question: str,
+        references: list[str],
+        candidate: str,
+    ) -> bool:
+        prompt_text = self._render_prompt(
+            question=question,
+            references=references,
+            candidate=candidate,
+        )
+        same_score = self._label_score(prompt_text, "SAME")
+        different_score = self._label_score(prompt_text, "DIFFERENT")
+        return same_score >= different_score
+
+
 def write_budget_report(
     *,
     experiment_name: str,
@@ -362,6 +450,8 @@ def write_budget_report(
     bootstrap_question_count: int,
     train_steps: int,
     cartridge_tokens: int,
+    semantic_judge: bool = False,
+    judge_device: str | None = None,
 ) -> dict[str, Any]:
     baseline_rows = [
         json.loads(line)
@@ -376,43 +466,69 @@ def write_budget_report(
     if len(baseline_rows) != len(cartridge_rows):
         raise ValueError("Baseline and cartridge row counts differ.")
 
+    judge = (
+        SemanticEquivalenceJudge(device=judge_device or "cpu")
+        if semantic_judge
+        else None
+    )
     paired_rows: list[dict[str, Any]] = []
     for baseline, cartridge in zip(baseline_rows, cartridge_rows, strict=True):
-        paired_rows.append(
-            {
-                "prompt_id": baseline["prompt_id"],
-                "question": baseline["metadata"]["question_id"],
-                "baseline_exact_match": baseline["exact_match"],
-                "cartridge_exact_match": cartridge["exact_match"],
-                "baseline_prediction": baseline["prediction"],
-                "cartridge_prediction": cartridge["prediction"],
-                "gold": baseline["gold"],
-                "baseline_prefill_ms": baseline.get("prefill_ms"),
-                "cartridge_prefill_ms": cartridge.get("prefill_ms"),
-                "baseline_total_latency_ms": baseline.get("total_latency_ms"),
-                "cartridge_total_latency_ms": cartridge.get("total_latency_ms"),
-                "baseline_decode_tokens_per_second": baseline.get("decode_tokens_per_second"),
-                "cartridge_decode_tokens_per_second": cartridge.get("decode_tokens_per_second"),
-                "compression_ratio": baseline["canonical_kv_bytes"]
-                / cartridge["canonical_kv_bytes"],
-                "throughput_ratio": (
-                    cartridge["decode_tokens_per_second"] / baseline["decode_tokens_per_second"]
-                    if baseline.get("decode_tokens_per_second")
-                    and cartridge.get("decode_tokens_per_second")
-                    else None
-                ),
-                "prefill_speedup_ratio": (
-                    baseline["prefill_ms"] / cartridge["prefill_ms"]
-                    if baseline.get("prefill_ms") and cartridge.get("prefill_ms")
-                    else None
-                ),
-                "end_to_end_speedup_ratio": (
-                    baseline["total_latency_ms"] / cartridge["total_latency_ms"]
-                    if baseline.get("total_latency_ms") and cartridge.get("total_latency_ms")
-                    else None
-                ),
-            }
-        )
+        row = {
+            "prompt_id": baseline["prompt_id"],
+            "question": baseline["metadata"]["question_id"],
+            "query": baseline["metadata"]["query"],
+            "baseline_exact_match": baseline["exact_match"],
+            "cartridge_exact_match": cartridge["exact_match"],
+            "baseline_prediction": baseline["prediction"],
+            "cartridge_prediction": cartridge["prediction"],
+            "gold": baseline["gold"],
+            "baseline_prefill_ms": baseline.get("prefill_ms"),
+            "cartridge_prefill_ms": cartridge.get("prefill_ms"),
+            "baseline_total_latency_ms": baseline.get("total_latency_ms"),
+            "cartridge_total_latency_ms": cartridge.get("total_latency_ms"),
+            "baseline_decode_tokens_per_second": baseline.get("decode_tokens_per_second"),
+            "cartridge_decode_tokens_per_second": cartridge.get("decode_tokens_per_second"),
+            "compression_ratio": baseline["canonical_kv_bytes"] / cartridge["canonical_kv_bytes"],
+            "throughput_ratio": (
+                cartridge["decode_tokens_per_second"] / baseline["decode_tokens_per_second"]
+                if baseline.get("decode_tokens_per_second")
+                and cartridge.get("decode_tokens_per_second")
+                else None
+            ),
+            "prefill_speedup_ratio": (
+                baseline["prefill_ms"] / cartridge["prefill_ms"]
+                if baseline.get("prefill_ms") and cartridge.get("prefill_ms")
+                else None
+            ),
+            "end_to_end_speedup_ratio": (
+                baseline["total_latency_ms"] / cartridge["total_latency_ms"]
+                if baseline.get("total_latency_ms") and cartridge.get("total_latency_ms")
+                else None
+            ),
+        }
+        if judge is not None:
+            references = [str(item) for item in row["gold"]]
+            row["baseline_semantic_match"] = (
+                True
+                if row["baseline_exact_match"]
+                else judge.is_equivalent(
+                    question=row["query"],
+                    references=references,
+                    candidate=row["baseline_prediction"],
+                )
+            )
+            row["cartridge_semantic_match"] = (
+                True
+                if row["cartridge_exact_match"]
+                else judge.is_equivalent(
+                    question=row["query"],
+                    references=references,
+                    candidate=row["cartridge_prediction"],
+                )
+            )
+        paired_rows.append(row)
+    if judge is not None:
+        judge.close()
 
     baseline_first = paired_rows[0]
     followups = paired_rows[1:]
@@ -475,6 +591,13 @@ def write_budget_report(
             if row["cartridge_total_latency_ms"]
         ),
     }
+    if semantic_judge:
+        summary["baseline_semantic_match_rate"] = (
+            sum(int(bool(row["baseline_semantic_match"])) for row in paired_rows) / len(paired_rows)
+        )
+        summary["cartridge_semantic_match_rate"] = (
+            sum(int(bool(row["cartridge_semantic_match"])) for row in paired_rows) / len(paired_rows)
+        )
     summary["cartridge_amortized_session_total_ms"] = (
         summary["cartridge_query_session_total_ms"] + (build_seconds * 1000.0)
     )
@@ -507,6 +630,16 @@ def write_budget_report(
         f"- One-time compression/build time: {build_seconds:.2f}s",
         f"- Baseline exact-match rate: {summary['baseline_exact_match_rate']:.3f}",
         f"- Cartridge exact-match rate: {summary['cartridge_exact_match_rate']:.3f}",
+        (
+            f"- Baseline semantic-match rate: {summary['baseline_semantic_match_rate']:.3f}"
+            if semantic_judge
+            else "- Baseline semantic-match rate: n/a"
+        ),
+        (
+            f"- Cartridge semantic-match rate: {summary['cartridge_semantic_match_rate']:.3f}"
+            if semantic_judge
+            else "- Cartridge semantic-match rate: n/a"
+        ),
         f"- Average compression ratio: {summary['avg_compression_ratio']:.3f}x",
         (
             f"- Average decode throughput ratio: {summary['avg_throughput_ratio']:.3f}x"
@@ -553,24 +686,31 @@ def write_budget_report(
         ),
         "",
         (
-            "| question | baseline_em | cartridge_em | compression_ratio | "
-            "decode_ratio | prefill_speedup | e2e_speedup |"
+            "| question | baseline_em | cartridge_em | baseline_sem | cartridge_sem | "
+            "compression_ratio | decode_ratio | prefill_speedup | e2e_speedup |"
         ),
-        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for row in paired_rows:
         throughput = row["throughput_ratio"]
         prefill = row["prefill_speedup_ratio"]
         e2e = row["end_to_end_speedup_ratio"]
+        baseline_sem = row.get("baseline_semantic_match")
+        cartridge_sem = row.get("cartridge_semantic_match")
         lines.append(
             f"| {row['question']} | {int(row['baseline_exact_match'])} | "
-            f"{int(row['cartridge_exact_match'])} | {row['compression_ratio']:.3f} | "
+            f"{int(row['cartridge_exact_match'])} | "
+            f"{'n/a' if baseline_sem is None else int(bool(baseline_sem))} | "
+            f"{'n/a' if cartridge_sem is None else int(bool(cartridge_sem))} | "
+            f"{row['compression_ratio']:.3f} | "
             f"{throughput:.3f} | {prefill:.3f} | {e2e:.3f} |"
             if throughput is not None and prefill is not None and e2e is not None
             else
             f"| {row['question']} | {int(row['baseline_exact_match'])} | "
-            f"{int(row['cartridge_exact_match'])} | {row['compression_ratio']:.3f} | "
-            "n/a | n/a | n/a |"
+            f"{int(row['cartridge_exact_match'])} | "
+            f"{'n/a' if baseline_sem is None else int(bool(baseline_sem))} | "
+            f"{'n/a' if cartridge_sem is None else int(bool(cartridge_sem))} | "
+            f"{row['compression_ratio']:.3f} | n/a | n/a | n/a |"
         )
     report_path = output_dir / "comparison.md"
     report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")

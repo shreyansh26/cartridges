@@ -141,6 +141,8 @@ def main() -> int:
     parser.add_argument("--train-steps", type=int, default=240)
     parser.add_argument("--max-completion-tokens", type=int, default=48)
     parser.add_argument("--max-context-tokens", type=int, default=8192)
+    parser.add_argument("--semantic-judge", action="store_true")
+    parser.add_argument("--judge-device")
     args = parser.parse_args()
 
     inputs = load_experiment_inputs(args.experiment_name, data_root=args.data_root)
@@ -260,6 +262,8 @@ def main() -> int:
             bootstrap_question_count=len(bootstrap_examples),
             train_steps=args.train_steps,
             cartridge_tokens=cartridge_tokens,
+            semantic_judge=args.semantic_judge,
+            judge_device=args.judge_device or args.device,
         )
         write_json(
             budget_dir / "manifest.json",
@@ -269,6 +273,7 @@ def main() -> int:
                 "train_summary": train_summary,
                 "predictions_path": str(cartridge_predictions_path.resolve()),
                 "report_path": summary["report_path"],
+                "semantic_judge": args.semantic_judge,
             },
         )
         budget_summaries.append(summary)
