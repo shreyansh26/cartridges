@@ -1,0 +1,15 @@
+.venv/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.py[cod]
+
+outputs/
+wandb/
+*.pt
+*.jsonl
+.tmp/
+data/
+cartridges_ref/
+
+.DS_Store
