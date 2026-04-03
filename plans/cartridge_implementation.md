@@ -174,6 +174,14 @@ T7b ──────┴─ T7c ─┘
 - v1 training uses single-example batches instead of packed multi-sequence flex attention.
 - Full online W&B runs remain blocked until `WANDB_API_KEY` is set.
 
+## Post-Plan Additions
+- Added a standalone demo workflow for single-corpus cartridge Q&A:
+  - `scripts/demo_cartridge_qa.py build` compresses one source file into one cartridge artifact.
+  - `scripts/demo_cartridge_qa.py ask` reloads that artifact and answers repeated questions from the same corpus, with optional full-context comparison.
+- Verified the demo workflow on April 3, 2026 against `plans/cartridge_implementation.md` using:
+  - `build` with 2 synthesis samples and 2 train steps on GPU 3.
+  - `ask --show-baseline` using the saved manifest at `/tmp/demo_cartridge_plan/demo_manifest.json`.
+
 ## Sources
 - [Cartridges paper](https://arxiv.org/abs/2506.06266)
 - [HazyResearch/cartridges reference repo](https://github.com/HazyResearch/cartridges)
