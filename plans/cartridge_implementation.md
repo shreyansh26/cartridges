@@ -9,6 +9,13 @@
 - Use offline W&B for smoke runs. Promote to online only when `WANDB_API_KEY` is present.
 - On April 2, 2026, GPUs 3 and 5 were idle; execution should prefer GPU 3, then GPU 5, and never use GPUs 6 or 7.
 
+## Current Public Interface
+- Public scripts are now limited to `scripts/check_env.py`, `scripts/serve_vllm.py`, and `scripts/run_benchmark.py`.
+- Versioned experiment inputs live under `data/<experiment_name>/`.
+- Required files for each experiment are `data.txt` and `eval_spec.json`; `metadata.json` is optional.
+- Benchmark outputs live under `outputs/<experiment_name>/runs/<run_id>/` with a `latest` symlink for convenience.
+- The unified runner computes the full-context baseline once, then trains and evaluates one cartridge per requested budget under the same run directory.
+
 ## Prerequisites
 - `uv` available for environment and dependency management
 - Hugging Face auth via `HF_TOKEN`
@@ -175,23 +182,16 @@ T7b ──────┴─ T7c ─┘
 - Full online W&B runs remain blocked until `WANDB_API_KEY` is set.
 
 ## Post-Plan Additions
-- Added a standalone demo workflow for single-corpus cartridge Q&A:
-  - `scripts/demo_cartridge_qa.py build` compresses one source file into one cartridge artifact.
-  - `scripts/demo_cartridge_qa.py ask` reloads that artifact and answers repeated questions from the same corpus, with optional full-context comparison.
-- Extended the demo build path with explicit bootstrap-question distillation:
-  - `--bootstrap-question` / `--bootstrap-question-file` let the cartridge train directly on a supplied question set from the same corpus.
-  - `scripts/run_demo_example.py` runs a checked-in example using `examples/demo_corpus.txt` and `examples/demo_questions.txt`.
-- Verified the demo workflow on April 3, 2026 against `plans/cartridge_implementation.md` using:
-  - `build` with 2 synthesis samples and 2 train steps on GPU 3.
-  - `ask --show-baseline` using the saved manifest at `/tmp/demo_cartridge_plan/demo_manifest.json`.
-- Verified the checked-in example workflow on April 3, 2026 using `/tmp/demo_example_checked/demo_results.json`:
-  - cartridge answers matched full-context answers on all 3 example questions.
-  - canonical KV bytes dropped from about `36.0-37.3 MB` full-context to `18.9 MB` for the cartridge.
+- Refactored the public interface on April 3, 2026 to a single generic benchmark path:
+  - `scripts/run_benchmark.py <experiment_name>` is now the only public benchmark entrypoint.
+  - `data/wikipedia_india/` is the canonical checked-in experiment folder replacing `examples/`.
+  - The old demo-specific, India-specific, NIAH-specific, and arXiv-specific public scripts were removed.
+  - Generic dataset helpers now live in `src/cartridges/data/text_dataset.py`.
+  - Generic benchmark helpers now live in `src/cartridges/benchmarks/text_benchmark.py`.
 - Added a held-out India Wikipedia benchmark workflow on April 3, 2026:
-  - `examples/india_wikipedia_8192.txt` freezes the Wikipedia India page at 8192 tokens.
-  - `examples/india_wikipedia_20_eval_spec.json` contains the 20 final unseen factual questions.
-  - `scripts/run_india_wikipedia_benchmark.py` runs the single-GPU comparison end to end and writes strict EM, compression, decode throughput, prefill speedup, end-to-end speedup, and first/follow-up latency metrics.
-  - `reports/india_wikipedia_8192_comparison.md` summarizes the `512`-token and `1024`-token cartridge runs.
+  - `data/wikipedia_india/data.txt` freezes the India corpus at 8192 tokens.
+  - `data/wikipedia_india/eval_spec.json` contains the 20 final unseen factual questions.
+  - `scripts/run_benchmark.py wikipedia_india --cartridge-tokens 512 1024` runs the single-GPU comparison end to end and writes the shared baseline, per-budget predictions, and aggregate report under `outputs/wikipedia_india/runs/<run_id>/`.
 
 ## Sources
 - [Cartridges paper](https://arxiv.org/abs/2506.06266)

@@ -6,41 +6,12 @@ from pathlib import Path
 from statistics import mean
 from typing import Any
 
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
 from cartridges.clients import VLLMClient
+from cartridges.config import DEFAULT_MATRIX
 from cartridges.data.common import stable_hash, write_json, write_jsonl
-
-
-def build_eval_rows_from_spec(
-    *,
-    corpus_path: str | Path,
-    spec_path: str | Path,
-    output_path: str | Path,
-    sample_id: str = "india-wikipedia-8192",
-) -> list[dict[str, Any]]:
-    context = Path(corpus_path).read_text(encoding="utf-8")
-    spec_rows = json.loads(Path(spec_path).read_text(encoding="utf-8"))
-    rows: list[dict[str, Any]] = []
-    for item in spec_rows:
-        row = {
-            "sample_id": sample_id,
-            "context": context,
-            "query": item["query"],
-            "answer_prompt": item["answer_prompt"],
-            "answers": item["answers"],
-            "question_id": item["id"],
-        }
-        row["row_hash"] = stable_hash(
-            {
-                "sample_id": row["sample_id"],
-                "query": row["query"],
-                "answer_prompt": row["answer_prompt"],
-                "answers": row["answers"],
-                "question_id": row["question_id"],
-            }
-        )
-        rows.append(row)
-    write_jsonl(Path(output_path), rows)
-    return rows
 
 
 def _parse_question_answer_lines(text: str) -> list[tuple[str, str]]:
@@ -54,15 +25,11 @@ def _parse_question_answer_lines(text: str) -> list[tuple[str, str]]:
             continue
         line = re.sub(r"^\d+[\).\s-]+", "", line)
         line = re.sub(r"^[-*]\s+", "", line)
-        line = line.strip()
         if "|||" not in line:
             continue
         question, answer = [part.strip() for part in line.split("|||", maxsplit=1)]
-        if not question.endswith("?"):
-            continue
-        if not answer:
-            continue
-        pairs.append((question, answer))
+        if question.endswith("?") and answer:
+            pairs.append((question, answer))
     return pairs
 
 
@@ -97,7 +64,7 @@ def _content_passages(corpus_text: str) -> list[str]:
             sentence_chunks.append(" ".join(buffer))
 
     passages: list[str] = []
-    buffer: list[str] = []
+    buffer = []
     buffer_chars = 0
     for chunk in sentence_chunks:
         projected = buffer_chars + len(chunk) + (2 if buffer else 0)
@@ -115,17 +82,15 @@ def _content_passages(corpus_text: str) -> list[str]:
 
 def generate_bootstrap_questions(
     *,
-    corpus_path: str | Path,
+    corpus_text: str,
+    eval_spec: list[dict[str, Any]],
     output_path: str | Path,
     base_url: str,
     api_key: str,
-    eval_spec_path: str | Path,
     num_questions: int,
     batch_size: int = 20,
     max_rounds: int = 40,
 ) -> list[str]:
-    corpus_text = Path(corpus_path).read_text(encoding="utf-8")
-    eval_spec = json.loads(Path(eval_spec_path).read_text(encoding="utf-8"))
     forbidden = {item["query"].strip().lower() for item in eval_spec}
     client = VLLMClient(base_url=base_url, api_key=api_key)
     generated: list[str] = []
@@ -183,6 +148,7 @@ def generate_bootstrap_questions(
                         break
     finally:
         client.close()
+
     minimum_questions = min(num_questions, max(20, num_questions // 2))
     if len(generated) < minimum_questions:
         raise RuntimeError(
@@ -195,20 +161,193 @@ def generate_bootstrap_questions(
     return generated
 
 
+def generate_teacher_answers(
+    *,
+    corpus_text: str,
+    questions: list[str],
+    output_path: str | Path,
+    base_url: str,
+    api_key: str,
+    max_completion_tokens: int,
+) -> list[dict[str, str]]:
+    if not questions:
+        return []
+
+    client = VLLMClient(
+        base_url=base_url,
+        api_key=api_key,
+        model_id=DEFAULT_MATRIX.model_id,
+    )
+    answer_records: list[dict[str, str]] = []
+    system_prompt = (
+        "Please answer the user's question using only the provided context.\n\n"
+        f"<context>\n{corpus_text}\n</context>\n\n"
+        "Follow the requested answer format exactly. Do not emit <think> tags or chain-of-thought."
+    )
+    try:
+        parity = client.probe_tokenizer_parity()
+        if not parity.matches:
+            raise RuntimeError(
+                "Tokenizer mismatch between local HF and vLLM during teacher answer generation."
+            )
+        for question in questions:
+            cleaned_question = question.strip()
+            assistant_turn = client.chat(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"/no_think\n{cleaned_question}"},
+                ],
+                max_completion_tokens=max_completion_tokens,
+                temperature=0.0,
+                top_logprobs=None,
+                run_mode="smoke",
+            )
+            answer_records.append(
+                {
+                    "question": cleaned_question,
+                    "user_message": f"/no_think\n{cleaned_question}",
+                    "assistant_text": assistant_turn.text.strip(),
+                }
+            )
+    finally:
+        client.close()
+    write_jsonl(Path(output_path), answer_records)
+    return answer_records
+
+
+def build_training_dataset(
+    *,
+    corpus_text: str,
+    slice_id: str,
+    answer_records: list[dict[str, str]],
+    output_path: str | Path,
+    device: str,
+    top_logprobs: int,
+) -> list[dict[str, Any]]:
+    if not answer_records:
+        raise ValueError("Cannot build a training dataset without teacher answer records.")
+
+    tokenizer = AutoTokenizer.from_pretrained(DEFAULT_MATRIX.model_id)
+    model = AutoModelForCausalLM.from_pretrained(
+        DEFAULT_MATRIX.model_id,
+        dtype=torch.bfloat16 if device.startswith("cuda") else torch.float32,
+        attn_implementation="sdpa",
+    )
+    model.to(device)
+    model.eval()
+
+    rows: list[dict[str, Any]] = []
+    system_prompt = (
+        "Please answer the user's question using only the provided context.\n\n"
+        f"<context>\n{corpus_text}\n</context>\n\n"
+        "Follow the requested answer format exactly. Do not emit <think> tags or chain-of-thought."
+    )
+    with torch.inference_mode():
+        for answer_record in answer_records:
+            user_message = answer_record["user_message"]
+            assistant_text = answer_record["assistant_text"].strip()
+            assistant_text = re.sub(r"<think>.*?</think>", " ", assistant_text, flags=re.DOTALL)
+            if assistant_text.startswith("<think>"):
+                assistant_text = assistant_text.removeprefix("<think>").strip()
+            assistant_text = re.sub(r"\s+", " ", assistant_text).strip()
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ]
+            prompt_text = tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+                chat_template_kwargs={"enable_thinking": False},
+            )
+            prompt_ids = tokenizer.encode(prompt_text, add_special_tokens=False)
+            assistant_token_ids = tokenizer.encode(assistant_text, add_special_tokens=False)
+            if not assistant_token_ids:
+                continue
+
+            input_ids = torch.tensor(
+                [prompt_ids + assistant_token_ids],
+                device=device,
+                dtype=torch.long,
+            )
+            logits = model(input_ids=input_ids).logits
+            response_start = len(prompt_ids)
+            response_end = response_start + len(assistant_token_ids)
+            response_logits = logits[:, response_start - 1 : response_end - 1, :]
+            log_probs = torch.log_softmax(response_logits, dim=-1)
+            target_ids = input_ids[:, response_start:response_end]
+            target_log_probs = log_probs.gather(-1, target_ids.unsqueeze(-1)).squeeze(0).squeeze(-1)
+            top_values, top_indices = torch.topk(log_probs.squeeze(0), k=top_logprobs, dim=-1)
+
+            supervision = []
+            for row_idx, token_id in enumerate(assistant_token_ids):
+                supervision.append(
+                    {
+                        "token": tokenizer.decode([token_id]),
+                        "token_id": token_id,
+                        "logprob": float(target_log_probs[row_idx]),
+                        "source": "hf_teacher",
+                        "top_logprobs": [
+                            {
+                                "token": tokenizer.decode([candidate_id]),
+                                "token_id": int(candidate_id),
+                                "logprob": float(candidate_logprob),
+                            }
+                            for candidate_id, candidate_logprob in zip(
+                                top_indices[row_idx].tolist(),
+                                top_values[row_idx].tolist(),
+                                strict=True,
+                            )
+                        ],
+                    }
+                )
+
+            row_stub = {
+                "slice_ids": [slice_id],
+                "system_prompt": system_prompt,
+                "messages": [{"role": "user", "content": user_message}],
+                "assistant_token_ids": assistant_token_ids,
+            }
+            row_hash = stable_hash(row_stub)
+            rows.append(
+                {
+                    "record_id": f"{slice_id}-bootstrap-{row_hash[:12]}",
+                    "slice_ids": [slice_id],
+                    "system_prompt": system_prompt,
+                    "messages": [
+                        {"role": "user", "content": user_message},
+                        {"role": "assistant", "content": assistant_text},
+                    ],
+                    "assistant_token_ids": assistant_token_ids,
+                    "assistant_supervision": supervision,
+                    "row_hash": row_hash,
+                    "metadata": {
+                        "question": answer_record["question"],
+                        "logprob_source": "hf_teacher",
+                    },
+                }
+            )
+    write_jsonl(Path(output_path), rows)
+    return rows
+
+
 def _safe_mean(values: list[float]) -> float | None:
     if not values:
         return None
     return float(mean(values))
 
 
-def write_india_benchmark_report(
+def write_budget_report(
     *,
+    experiment_name: str,
+    budget_label: str,
     baseline_path: str | Path,
     cartridge_path: str | Path,
     output_dir: str | Path,
     build_seconds: float,
     bootstrap_question_count: int,
     train_steps: int,
+    cartridge_tokens: int,
 ) -> dict[str, Any]:
     baseline_rows = [
         json.loads(line)
@@ -264,6 +403,9 @@ def write_india_benchmark_report(
     baseline_first = paired_rows[0]
     followups = paired_rows[1:]
     summary = {
+        "experiment_name": experiment_name,
+        "budget_label": budget_label,
+        "cartridge_tokens": cartridge_tokens,
         "num_questions": len(paired_rows),
         "bootstrap_question_count": bootstrap_question_count,
         "train_steps": train_steps,
@@ -276,11 +418,7 @@ def write_india_benchmark_report(
         / len(paired_rows),
         "avg_compression_ratio": _safe_mean([row["compression_ratio"] for row in paired_rows]),
         "avg_throughput_ratio": _safe_mean(
-            [
-                row["throughput_ratio"]
-                for row in paired_rows
-                if row["throughput_ratio"] is not None
-            ]
+            [row["throughput_ratio"] for row in paired_rows if row["throughput_ratio"] is not None]
         ),
         "avg_prefill_speedup_ratio": _safe_mean(
             [
@@ -346,19 +484,20 @@ def write_india_benchmark_report(
     write_jsonl(output_dir / "comparison.jsonl", paired_rows)
 
     lines = [
-        "# India Wikipedia Cartridge Benchmark",
+        f"# {experiment_name} Benchmark ({budget_label})",
         "",
         f"- Questions: {summary['num_questions']}",
         f"- Bootstrap questions: {bootstrap_question_count}",
         f"- Train steps: {train_steps}",
+        f"- Cartridge tokens: {cartridge_tokens}",
         f"- One-time compression/build time: {build_seconds:.2f}s",
         f"- Baseline exact-match rate: {summary['baseline_exact_match_rate']:.3f}",
         f"- Cartridge exact-match rate: {summary['cartridge_exact_match_rate']:.3f}",
         f"- Average compression ratio: {summary['avg_compression_ratio']:.3f}x",
         (
-            f"- Average throughput ratio: {summary['avg_throughput_ratio']:.3f}x"
+            f"- Average decode throughput ratio: {summary['avg_throughput_ratio']:.3f}x"
             if summary["avg_throughput_ratio"] is not None
-            else "- Average throughput ratio: n/a"
+            else "- Average decode throughput ratio: n/a"
         ),
         (
             f"- Average prefill speedup: {summary['avg_prefill_speedup_ratio']:.3f}x"
@@ -401,7 +540,7 @@ def write_india_benchmark_report(
         "",
         (
             "| question | baseline_em | cartridge_em | compression_ratio | "
-            "throughput_ratio | prefill_speedup | e2e_speedup |"
+            "decode_ratio | prefill_speedup | e2e_speedup |"
         ),
         "| --- | --- | --- | --- | --- | --- | --- |",
     ]
@@ -424,5 +563,50 @@ def write_india_benchmark_report(
     return {
         **summary,
         "comparison_path": str((output_dir / "comparison.jsonl").resolve()),
+        "report_path": str(report_path.resolve()),
+    }
+
+
+def write_run_report(
+    *,
+    experiment_name: str,
+    run_dir: str | Path,
+    budget_summaries: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not budget_summaries:
+        raise ValueError("Cannot write an aggregate run report without budget summaries.")
+
+    report_dir = Path(run_dir) / "report"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    summary = {
+        "experiment_name": experiment_name,
+        "budgets": budget_summaries,
+    }
+    write_json(report_dir / "summary.json", summary)
+
+    lines = [
+        f"# {experiment_name} Benchmark",
+        "",
+        (
+            "| budget | baseline_em | cartridge_em | compression | decode_ratio | "
+            "prefill_speedup | e2e_speedup | build_time_s | "
+            "baseline_followup_ms | cartridge_followup_ms |"
+        ),
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for item in budget_summaries:
+        lines.append(
+            f"| {item['budget_label']} | {item['baseline_exact_match_rate']:.3f} | "
+            f"{item['cartridge_exact_match_rate']:.3f} | {item['avg_compression_ratio']:.3f}x | "
+            f"{item['avg_throughput_ratio']:.3f}x | {item['avg_prefill_speedup_ratio']:.3f}x | "
+            f"{item['avg_end_to_end_speedup_ratio']:.3f}x | "
+            f"{item['compression_build_seconds']:.2f} | "
+            f"{item['baseline_followup_total_latency_ms']:.2f} | "
+            f"{item['cartridge_followup_total_latency_ms']:.2f} |"
+        )
+    report_path = report_dir / "comparison.md"
+    report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return {
+        "summary_path": str((report_dir / "summary.json").resolve()),
         "report_path": str(report_path.resolve()),
     }

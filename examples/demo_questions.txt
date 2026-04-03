@@ -1,3 +1,0 @@
-What GPU order is preferred, and which GPUs are disallowed?
-Which model is used as the parent model?
-What W&B mode is used for smoke runs, and what is required for full runs?
