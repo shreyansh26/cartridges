@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import string
 from pathlib import Path
 from statistics import mean
 from typing import Any
@@ -377,6 +378,50 @@ class SemanticEquivalenceJudge:
         if self.device.startswith("cuda"):
             torch.cuda.empty_cache()
 
+    @staticmethod
+    def _normalize_answer_text(text: str) -> str:
+        cleaned = _clean_assistant_text(text).lower()
+        cleaned = cleaned.translate(str.maketrans("", "", string.punctuation))
+        cleaned = re.sub(r"\b(a|an|the)\b", " ", cleaned)
+        return re.sub(r"\s+", " ", cleaned).strip()
+
+    @classmethod
+    def _tokenize_normalized_answer(cls, text: str) -> list[str]:
+        normalized = cls._normalize_answer_text(text)
+        return normalized.split() if normalized else []
+
+    @classmethod
+    def _contains_token_subsequence(cls, larger: list[str], smaller: list[str]) -> bool:
+        if not smaller or len(smaller) > len(larger):
+            return False
+        width = len(smaller)
+        return any(larger[i : i + width] == smaller for i in range(len(larger) - width + 1))
+
+    @classmethod
+    def _heuristic_equivalent(cls, *, references: list[str], candidate: str) -> bool:
+        candidate_normalized = cls._normalize_answer_text(candidate)
+        if not candidate_normalized:
+            return False
+        candidate_tokens = cls._tokenize_normalized_answer(candidate)
+        for reference in references:
+            reference_normalized = cls._normalize_answer_text(reference)
+            if not reference_normalized:
+                continue
+            if candidate_normalized == reference_normalized:
+                return True
+            reference_tokens = cls._tokenize_normalized_answer(reference)
+            if (
+                cls._contains_token_subsequence(candidate_tokens, reference_tokens)
+                and len(candidate_tokens) - len(reference_tokens) <= 10
+            ):
+                return True
+            if (
+                cls._contains_token_subsequence(reference_tokens, candidate_tokens)
+                and len(reference_tokens) - len(candidate_tokens) <= 3
+            ):
+                return True
+        return False
+
     def _render_prompt(
         self,
         *,
@@ -390,10 +435,11 @@ class SemanticEquivalenceJudge:
             {
                 "role": "user",
                 "content": (
-                    f"Question:\n{question}\n\n"
+                    f"/no_think\nQuestion:\n{question}\n\n"
                     f"Reference answers:\n{reference_lines}\n\n"
                     f"Candidate answer:\n{candidate}\n\n"
-                    "Are the candidate answer and any reference answer semantically the same?"
+                    "Are the candidate answer and any reference answer semantically the same? "
+                    "Reply with exactly SAME or DIFFERENT."
                 ),
             },
         ]
@@ -404,25 +450,7 @@ class SemanticEquivalenceJudge:
             chat_template_kwargs={"enable_thinking": False},
         )
 
-    def _label_score(self, prompt_text: str, label: str) -> float:
-        prompt_ids = self.tokenizer.encode(prompt_text, add_special_tokens=False)
-        label_ids = self.tokenizer.encode(label, add_special_tokens=False)
-        input_ids = torch.tensor(
-            [prompt_ids + label_ids],
-            device=self.device,
-            dtype=torch.long,
-        )
-        with torch.inference_mode():
-            logits = self.model(input_ids=input_ids).logits
-            label_start = len(prompt_ids) - 1
-            label_end = label_start + len(label_ids)
-            label_logits = logits[:, label_start:label_end, :]
-            log_probs = torch.log_softmax(label_logits, dim=-1)
-            target_ids = torch.tensor([label_ids], device=self.device, dtype=torch.long)
-            gathered = log_probs.gather(-1, target_ids.unsqueeze(-1)).squeeze(0).squeeze(-1)
-        return float(gathered.sum().item())
-
-    def is_equivalent(
+    def _model_is_equivalent(
         self,
         *,
         question: str,
@@ -434,9 +462,40 @@ class SemanticEquivalenceJudge:
             references=references,
             candidate=candidate,
         )
-        same_score = self._label_score(prompt_text, "SAME")
-        different_score = self._label_score(prompt_text, "DIFFERENT")
-        return same_score >= different_score
+        encoded = self.tokenizer(prompt_text, return_tensors="pt")
+        encoded = {key: value.to(self.device) for key, value in encoded.items()}
+        pad_token_id = self.tokenizer.pad_token_id or self.tokenizer.eos_token_id
+        with torch.inference_mode():
+            output_ids = self.model.generate(
+                **encoded,
+                max_new_tokens=8,
+                do_sample=False,
+                pad_token_id=pad_token_id,
+            )
+        new_tokens = output_ids[0][encoded["input_ids"].shape[1] :]
+        raw_text = self.tokenizer.decode(new_tokens, skip_special_tokens=False)
+        cleaned = _clean_assistant_text(raw_text)
+        cleaned = cleaned.replace("<|im_end|>", " ").strip().upper()
+        if "DIFFERENT" in cleaned:
+            return False
+        if "SAME" in cleaned:
+            return True
+        return False
+
+    def is_equivalent(
+        self,
+        *,
+        question: str,
+        references: list[str],
+        candidate: str,
+    ) -> bool:
+        if self._heuristic_equivalent(references=references, candidate=candidate):
+            return True
+        return self._model_is_equivalent(
+            question=question,
+            references=references,
+            candidate=candidate,
+        )
 
 
 def write_budget_report(

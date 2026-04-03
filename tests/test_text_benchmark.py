@@ -7,6 +7,7 @@ from cartridges.benchmarks.text_benchmark import (
     BOOTSTRAP_ANSWER_PROMPT,
     _clean_assistant_text,
     _assistant_target_token_ids,
+    SemanticEquivalenceJudge,
     generate_teacher_answers,
     write_budget_report,
     write_run_report,
@@ -163,3 +164,18 @@ def test_write_run_report_surfaces_semantic_columns(tmp_path) -> None:
     assert "baseline_sem" in report_text
     assert "cartridge_sem" in report_text
     assert "| cartridge_128 | 0.900 | 0.800 | 1.000 | 0.950 |" in report_text
+
+
+def test_semantic_judge_heuristic_handles_wrappers() -> None:
+    assert SemanticEquivalenceJudge._heuristic_equivalent(
+        references=["Republic of India"],
+        candidate="The Republic of India.",
+    )
+    assert SemanticEquivalenceJudge._heuristic_equivalent(
+        references=["Bay of Bengal"],
+        candidate="Bay of Bengal.",
+    )
+    assert not SemanticEquivalenceJudge._heuristic_equivalent(
+        references=["Buddhism and Jainism"],
+        candidate="Hinduism and Buddhism",
+    )
