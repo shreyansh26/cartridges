@@ -101,6 +101,7 @@ def build_demo_cartridge(
         questions=[question for question in (bootstrap_questions or []) if question.strip()],
         base_url=base_url,
         api_key=api_key,
+        device=device,
         top_logprobs=synthesis_top_logprobs,
         max_completion_tokens=bootstrap_max_completion_tokens,
     )
@@ -177,16 +178,14 @@ def _serialize_token_supervision(token) -> dict[str, Any]:
     }
 
 
-def _build_bootstrap_rows(
+def generate_bootstrap_answer_records(
     *,
     corpus_text: str,
-    slice_id: str,
     questions: list[str],
     base_url: str,
     api_key: str,
-    top_logprobs: int,
     max_completion_tokens: int,
-) -> list[dict[str, Any]]:
+) -> list[dict[str, str]]:
     if not questions:
         return []
 
@@ -195,13 +194,13 @@ def _build_bootstrap_rows(
         api_key=api_key,
         model_id=DEFAULT_MATRIX.model_id,
     )
-    rows: list[dict[str, Any]] = []
+    answer_records: list[dict[str, str]] = []
     system_prompt = SYSTEM_PROMPT.format(context=corpus_text)
     try:
         parity = client.probe_tokenizer_parity()
         if not parity.matches:
             raise RuntimeError(
-                "Tokenizer mismatch between local HF and vLLM during bootstrap question build."
+                "Tokenizer mismatch between local HF and vLLM during bootstrap answer build."
             )
         for question in questions:
             cleaned_question = question.strip()
@@ -213,14 +212,113 @@ def _build_bootstrap_rows(
                 ],
                 max_completion_tokens=max_completion_tokens,
                 temperature=0.0,
-                top_logprobs=top_logprobs,
+                top_logprobs=None,
                 run_mode="smoke",
             )
+            answer_records.append(
+                {
+                    "question": cleaned_question,
+                    "user_message": user_message,
+                    "assistant_text": assistant_turn.text.strip(),
+                }
+            )
+    finally:
+        client.close()
+    return answer_records
+
+
+def materialize_bootstrap_rows(
+    *,
+    corpus_text: str,
+    slice_id: str,
+    answer_records: list[dict[str, str]],
+    device: str,
+    top_logprobs: int,
+) -> list[dict[str, Any]]:
+    if not answer_records:
+        return []
+
+    tokenizer = AutoTokenizer.from_pretrained(DEFAULT_MATRIX.model_id)
+    model = AutoModelForCausalLM.from_pretrained(
+        DEFAULT_MATRIX.model_id,
+        dtype=torch.bfloat16 if device.startswith("cuda") else torch.float32,
+        attn_implementation="sdpa",
+    )
+    model.to(device)
+    model.eval()
+
+    rows: list[dict[str, Any]] = []
+    system_prompt = SYSTEM_PROMPT.format(context=corpus_text)
+    with torch.inference_mode():
+        for answer_record in answer_records:
+            user_message = answer_record["user_message"]
+            assistant_text = answer_record["assistant_text"].strip()
+            cleaned_assistant_text = re.sub(
+                r"\s+",
+                " ",
+                re.sub(r"<think>.*?</think>", " ", assistant_text, flags=re.DOTALL),
+            ).strip()
+            if cleaned_assistant_text.startswith("<think>"):
+                cleaned_assistant_text = cleaned_assistant_text.removeprefix("<think>").strip()
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ]
+            prompt_text = tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+                chat_template_kwargs={"enable_thinking": False},
+            )
+            prompt_ids = tokenizer.encode(prompt_text, add_special_tokens=False)
+            assistant_token_ids = tokenizer.encode(
+                cleaned_assistant_text,
+                add_special_tokens=False,
+            )
+            if not assistant_token_ids:
+                continue
+            input_ids = torch.tensor(
+                [prompt_ids + assistant_token_ids],
+                device=device,
+                dtype=torch.long,
+            )
+            logits = model(input_ids=input_ids).logits
+            response_start = len(prompt_ids)
+            response_end = response_start + len(assistant_token_ids)
+            response_logits = logits[:, response_start - 1 : response_end - 1, :]
+            log_probs = torch.log_softmax(response_logits, dim=-1)
+            target_ids = input_ids[:, response_start:response_end]
+            target_log_probs = log_probs.gather(-1, target_ids.unsqueeze(-1)).squeeze(0).squeeze(-1)
+            top_values, top_indices = torch.topk(log_probs.squeeze(0), k=top_logprobs, dim=-1)
+
+            supervision = []
+            for row_idx, token_id in enumerate(assistant_token_ids):
+                supervision.append(
+                    {
+                        "token": tokenizer.decode([token_id]),
+                        "token_id": token_id,
+                        "logprob": float(target_log_probs[row_idx]),
+                        "source": "hf_teacher",
+                        "top_logprobs": [
+                            {
+                                "token": tokenizer.decode([candidate_id]),
+                                "token_id": int(candidate_id),
+                                "logprob": float(candidate_logprob),
+                            }
+                            for candidate_id, candidate_logprob in zip(
+                                top_indices[row_idx].tolist(),
+                                top_values[row_idx].tolist(),
+                                strict=True,
+                            )
+                        ],
+                    }
+                )
+
             row_stub = {
                 "slice_ids": [slice_id],
                 "system_prompt": system_prompt,
                 "messages": [{"role": "user", "content": user_message}],
-                "assistant_token_ids": assistant_turn.token_ids,
+                "assistant_token_ids": assistant_token_ids,
             }
             row_hash = stable_hash(row_stub)
             rows.append(
@@ -230,25 +328,45 @@ def _build_bootstrap_rows(
                     "system_prompt": system_prompt,
                     "messages": [
                         {"role": "user", "content": user_message},
-                        {"role": "assistant", "content": assistant_turn.text.strip()},
+                        {"role": "assistant", "content": cleaned_assistant_text},
                     ],
-                    "assistant_token_ids": assistant_turn.token_ids,
-                    "assistant_supervision": [
-                        _serialize_token_supervision(token)
-                        for token in assistant_turn.token_logprobs
-                    ],
+                    "assistant_token_ids": assistant_token_ids,
+                    "assistant_supervision": supervision,
                     "row_hash": row_hash,
                     "metadata": {
-                        "question": cleaned_question,
-                        "finish_reason": assistant_turn.finish_reason,
-                        "usage": assistant_turn.usage,
-                        "logprob_source": assistant_turn.logprob_source,
+                        "question": answer_record["question"],
+                        "logprob_source": "hf_teacher",
                     },
                 }
             )
-    finally:
-        client.close()
     return rows
+
+
+def _build_bootstrap_rows(
+    *,
+    corpus_text: str,
+    slice_id: str,
+    questions: list[str],
+    base_url: str,
+    api_key: str,
+    device: str,
+    top_logprobs: int,
+    max_completion_tokens: int,
+) -> list[dict[str, Any]]:
+    answer_records = generate_bootstrap_answer_records(
+        corpus_text=corpus_text,
+        questions=questions,
+        base_url=base_url,
+        api_key=api_key,
+        max_completion_tokens=max_completion_tokens,
+    )
+    return materialize_bootstrap_rows(
+        corpus_text=corpus_text,
+        slice_id=slice_id,
+        answer_records=answer_records,
+        device=device,
+        top_logprobs=top_logprobs,
+    )
 
 
 def answer_with_cartridge(

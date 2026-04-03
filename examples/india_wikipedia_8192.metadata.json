@@ -1,0 +1,9 @@
+{
+  "title": "India",
+  "source_url": "https://en.wikipedia.org/wiki/India",
+  "api_url": "https://en.wikipedia.org/w/api.php?action=query&prop=extracts&explaintext=1&titles=India&format=json&redirects=1",
+  "fetched_at": "2026-04-03",
+  "original_characters": 64812,
+  "original_tokens": 14593,
+  "truncated_tokens": 8192
+}

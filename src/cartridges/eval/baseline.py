@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import time
 from pathlib import Path
 
@@ -29,6 +30,13 @@ def _head_dim(model_config) -> int:
 def _sync_if_cuda(device: str) -> None:
     if device.startswith("cuda"):
         torch.cuda.synchronize(device)
+
+
+def _clean_completion(text: str) -> str:
+    text = re.sub(r"<think>.*?</think>", " ", text, flags=re.DOTALL)
+    if text.startswith("<think>"):
+        text = text.removeprefix("<think>").strip()
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def run_vllm_quality_eval(
@@ -69,6 +77,7 @@ def run_vllm_quality_eval(
                 messages,
                 tokenize=False,
                 add_generation_prompt=True,
+                chat_template_kwargs={"enable_thinking": False},
             )
             prompt_tokens = len(client.tokenizer.encode(prompt_text, add_special_tokens=False))
 
@@ -84,9 +93,9 @@ def run_vllm_quality_eval(
                 EvalRecord(
                     prompt_id=f"{row['sample_id']}::{row['row_hash']}",
                     method="baseline_vllm_quality",
-                    prediction=result.text.strip(),
+                    prediction=_clean_completion(result.text),
                     gold=[str(item) for item in row["answers"]],
-                    exact_match=exact_match(result.text, row["answers"]),
+                    exact_match=exact_match(_clean_completion(result.text), row["answers"]),
                     canonical_kv_bytes=canonical_kv_bytes(
                         num_tokens=prompt_tokens,
                         num_hidden_layers=model_config.num_hidden_layers,
@@ -99,6 +108,7 @@ def run_vllm_quality_eval(
                     total_latency_ms=latency_ms,
                     metadata={
                         "sample_id": row["sample_id"],
+                        "question_id": row.get("question_id"),
                         "finish_reason": result.finish_reason,
                         "logprob_source": result.logprob_source,
                     },
@@ -141,6 +151,7 @@ def run_local_hf_matched_eval(
                 messages,
                 tokenize=False,
                 add_generation_prompt=True,
+                chat_template_kwargs={"enable_thinking": False},
             )
             encoded = tokenizer(prompt_text, return_tensors="pt", add_special_tokens=False)
             input_ids = encoded["input_ids"].to(device)
@@ -173,7 +184,9 @@ def run_local_hf_matched_eval(
             _sync_if_cuda(device)
             decode_seconds = time.perf_counter() - decode_started
 
-            completion_text = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+            completion_text = _clean_completion(
+                tokenizer.decode(generated_ids, skip_special_tokens=True)
+            )
             total_latency_ms = prefill_ms + (decode_seconds * 1000.0)
             decode_tokens_per_second = None
             if decode_seconds > 0 and generated_ids:
@@ -200,6 +213,7 @@ def run_local_hf_matched_eval(
                     completion_tokens=len(generated_ids),
                     metadata={
                         "sample_id": row["sample_id"],
+                        "question_id": row.get("question_id"),
                         "device": device,
                     },
                 )

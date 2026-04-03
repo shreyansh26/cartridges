@@ -60,7 +60,7 @@ def write_eval_records(path: str | Path, records: list[EvalRecord]) -> None:
 
 
 def build_messages(row: dict[str, Any]) -> list[dict[str, str]]:
-    user_prompt = f"{row['query']}\n\n{row['answer_prompt']}"
+    user_prompt = f"/no_think\n{row['query']}\n\n{row['answer_prompt']}"
     return [
         {"role": "system", "content": SYSTEM_PROMPT.format(context=row["context"])},
         {"role": "user", "content": user_prompt},
@@ -68,7 +68,7 @@ def build_messages(row: dict[str, Any]) -> list[dict[str, str]]:
 
 
 def build_cartridge_messages(row: dict[str, Any]) -> list[dict[str, str]]:
-    user_prompt = f"{row['query']}\n\n{row['answer_prompt']}"
+    user_prompt = f"/no_think\n{row['query']}\n\n{row['answer_prompt']}"
     return [
         {"role": "system", "content": CARTRIDGE_SYSTEM_PROMPT},
         {"role": "user", "content": user_prompt},

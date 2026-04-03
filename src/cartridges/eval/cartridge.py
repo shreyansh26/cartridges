@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import time
 from pathlib import Path
 
@@ -30,6 +31,13 @@ def _head_dim(model_config) -> int:
 def _sync_if_cuda(device: str) -> None:
     if device.startswith("cuda"):
         torch.cuda.synchronize(device)
+
+
+def _clean_completion(text: str) -> str:
+    text = re.sub(r"<think>.*?</think>", " ", text, flags=re.DOTALL)
+    if text.startswith("<think>"):
+        text = text.removeprefix("<think>").strip()
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def run_cartridge_eval(
@@ -68,6 +76,7 @@ def run_cartridge_eval(
                 build_messages(row),
                 tokenize=False,
                 add_generation_prompt=True,
+                chat_template_kwargs={"enable_thinking": False},
             )
             baseline_prompt_tokens = len(
                 tokenizer.encode(baseline_prompt, add_special_tokens=False)
@@ -77,6 +86,7 @@ def run_cartridge_eval(
                 messages,
                 tokenize=False,
                 add_generation_prompt=True,
+                chat_template_kwargs={"enable_thinking": False},
             )
             encoded = tokenizer(prompt_text, return_tensors="pt", add_special_tokens=False)
             input_ids = encoded["input_ids"].to(device)
@@ -136,7 +146,9 @@ def run_cartridge_eval(
             else:
                 decode_ms = (time.perf_counter() - decode_wall_start) * 1000.0
 
-            completion_text = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+            completion_text = _clean_completion(
+                tokenizer.decode(generated_ids, skip_special_tokens=True)
+            )
             decode_tokens_per_second = None
             if decode_ms and decode_ms > 0 and generated_ids:
                 decode_tokens_per_second = len(generated_ids) / (decode_ms / 1000.0)
@@ -168,6 +180,7 @@ def run_cartridge_eval(
                     completion_tokens=len(generated_ids),
                     metadata={
                         "sample_id": row["sample_id"],
+                        "question_id": row.get("question_id"),
                         "baseline_canonical_kv_bytes": baseline_bytes,
                         "device": device,
                         "cartridge_path": str(Path(cartridge_path).resolve()),

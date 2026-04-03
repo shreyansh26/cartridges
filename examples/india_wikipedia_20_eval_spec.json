@@ -1,0 +1,122 @@
+[
+  {
+    "id": "india-q01",
+    "query": "What is India's official name?",
+    "answer_prompt": "Answer with only the exact official name.",
+    "answers": ["republic of india"]
+  },
+  {
+    "id": "india-q02",
+    "query": "In which region is India located?",
+    "answer_prompt": "Answer with only the region name.",
+    "answers": ["south asia"]
+  },
+  {
+    "id": "india-q03",
+    "query": "What is India's rank by area?",
+    "answer_prompt": "Answer with only the rank phrase.",
+    "answers": ["seventh-largest"]
+  },
+  {
+    "id": "india-q04",
+    "query": "Since what year has India been the most populous country?",
+    "answer_prompt": "Answer with only the 4-digit year.",
+    "answers": ["2023"]
+  },
+  {
+    "id": "india-q05",
+    "query": "In what year did India gain independence?",
+    "answer_prompt": "Answer with only the 4-digit year.",
+    "answers": ["1947"]
+  },
+  {
+    "id": "india-q06",
+    "query": "Which sea lies to India's southwest?",
+    "answer_prompt": "Answer with only the sea name.",
+    "answers": ["arabian sea"]
+  },
+  {
+    "id": "india-q07",
+    "query": "Which bay lies to India's southeast?",
+    "answer_prompt": "Answer with only the bay name.",
+    "answers": ["bay of bengal"]
+  },
+  {
+    "id": "india-q08",
+    "query": "Which two countries border India to the east?",
+    "answer_prompt": "Answer with only the two country names joined by 'and'.",
+    "answers": ["bangladesh and myanmar"]
+  },
+  {
+    "id": "india-q09",
+    "query": "Which two countries is India near in the Indian Ocean?",
+    "answer_prompt": "Answer with only the two country names joined by 'and'.",
+    "answers": ["sri lanka and the maldives"]
+  },
+  {
+    "id": "india-q10",
+    "query": "In the western margins of which river basin did settled life emerge on the subcontinent 9,000 years ago?",
+    "answer_prompt": "Answer with only the river basin name.",
+    "answers": ["indus river basin"]
+  },
+  {
+    "id": "india-q11",
+    "query": "Which civilisation evolved gradually from that early settled life?",
+    "answer_prompt": "Answer with only the civilisation name.",
+    "answers": ["indus valley civilisation"]
+  },
+  {
+    "id": "india-q12",
+    "query": "Which two religions had arisen in India by 400 BCE?",
+    "answer_prompt": "Answer with only the two religion names joined by 'and'.",
+    "answers": ["buddhism and jainism"]
+  },
+  {
+    "id": "india-q13",
+    "query": "Which empire in south India created a long-lasting composite Hindu culture?",
+    "answer_prompt": "Answer with only the empire name.",
+    "answers": ["vijayanagara empire"]
+  },
+  {
+    "id": "india-q14",
+    "query": "In what year did British Crown rule begin in India?",
+    "answer_prompt": "Answer with only the 4-digit year.",
+    "answers": ["1858"]
+  },
+  {
+    "id": "india-q15",
+    "query": "Since what year has India been a federal republic?",
+    "answer_prompt": "Answer with only the 4-digit year.",
+    "answers": ["1950"]
+  },
+  {
+    "id": "india-q16",
+    "query": "What was India's population in 1951, in millions?",
+    "answer_prompt": "Answer with only the integer number.",
+    "answers": ["361"]
+  },
+  {
+    "id": "india-q17",
+    "query": "What was India's literacy rate in 2023, as a whole number percent?",
+    "answer_prompt": "Answer with only the integer number.",
+    "answers": ["74"]
+  },
+  {
+    "id": "india-q18",
+    "query": "How many biodiversity hotspots does India's land have?",
+    "answer_prompt": "Answer with only the integer number.",
+    "answers": ["4"]
+  },
+  {
+    "id": "india-q19",
+    "query": "How many states does India have?",
+    "answer_prompt": "Answer with only the integer number.",
+    "answers": ["28"]
+  },
+  {
+    "id": "india-q20",
+    "query": "How many union territories does India have?",
+    "answer_prompt": "Answer with only the integer number.",
+    "answers": ["8"]
+  }
+]

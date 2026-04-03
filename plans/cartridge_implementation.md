@@ -138,8 +138,8 @@ T7b ──────┴─ T7c ─┘
 - **description**: run the full NIAH reproduction on GPU 3, fallback 5, with cartridge budgets `{512, 1024}` first; if acceptance is missed, escalate to `{512, 1024, 2048}` and/or 16k synthesis samples before changing anything else. Use the longest context that passes preflight on one H100, targeting 64k and falling back to 32k if needed. Keep smoke offline; use online W&B only if `WANDB_API_KEY` is present.
 - **validation**: final artifacts include checkpoints, synthesis manifests, baseline and cartridge eval tables, and a report that shows at least one budget with `compression_ratio >= 4x`, `matched_engine_throughput_ratio >= 1.5x`, and exact-match within 5 absolute points of the naive baseline; if not, the sweep continues.
 - **status**: Not Completed
-- **log**:
-- **files edited/created**:
+- **log**: Added a held-out India Wikipedia benchmark harness on April 3, 2026 with an 8192-token frozen corpus, a 20-question final unseen eval set, passage-level bootstrap question generation, and strict single-GPU phase separation between vLLM teacher generation and local-HF supervision/training. Validated the sequencing fix with `/tmp/india_wikipedia_benchmark_smoke_seq`, then ran two real held-out comparisons on GPU 3: `/tmp/india_wikipedia_benchmark_main1` at a 512-token cartridge budget and `/tmp/india_wikipedia_benchmark_main2` at a 1024-token budget. The 512-token run reached `0.75` strict exact-match versus a `0.90` full-context baseline with `16.14x` compression, `8.39x` prefill speedup, and `2.14x` average end-to-end speedup; the 1024-token run reached `0.65` strict exact-match with `8.07x` compression and `2.17x` average end-to-end speedup. Decode-only throughput stayed near `1.0x`, which is expected because the speedup comes from prefill rather than decode. Acceptance is still open because no run has yet met the exact-match target while preserving the speedup target under the strict metric.
+- **files edited/created**: `examples/india_wikipedia_8192.txt`, `examples/india_wikipedia_8192.metadata.json`, `examples/india_wikipedia_20_eval_spec.json`, `src/cartridges/benchmarks/__init__.py`, `src/cartridges/benchmarks/wikipedia_qa.py`, `scripts/run_india_wikipedia_benchmark.py`, `reports/india_wikipedia_8192_comparison.md`
 
 ## Parallel Execution Groups
 
@@ -187,6 +187,11 @@ T7b ──────┴─ T7c ─┘
 - Verified the checked-in example workflow on April 3, 2026 using `/tmp/demo_example_checked/demo_results.json`:
   - cartridge answers matched full-context answers on all 3 example questions.
   - canonical KV bytes dropped from about `36.0-37.3 MB` full-context to `18.9 MB` for the cartridge.
+- Added a held-out India Wikipedia benchmark workflow on April 3, 2026:
+  - `examples/india_wikipedia_8192.txt` freezes the Wikipedia India page at 8192 tokens.
+  - `examples/india_wikipedia_20_eval_spec.json` contains the 20 final unseen factual questions.
+  - `scripts/run_india_wikipedia_benchmark.py` runs the single-GPU comparison end to end and writes strict EM, compression, decode throughput, prefill speedup, end-to-end speedup, and first/follow-up latency metrics.
+  - `reports/india_wikipedia_8192_comparison.md` summarizes the `512`-token and `1024`-token cartridge runs.
 
 ## Sources
 - [Cartridges paper](https://arxiv.org/abs/2506.06266)
