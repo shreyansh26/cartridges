@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import random
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -198,6 +199,9 @@ def train_cartridge(
         loss_history: list[float] = []
 
     optimizer.zero_grad(set_to_none=True)
+    best_loss = float("inf")
+    best_step = start_step
+    best_state_dict = deepcopy(cartridge.state_dict())
     for step_idx in range(start_step, steps):
         example = examples[step_idx % len(examples)]
         prompt_ids = _training_prompt(tokenizer, example.user_message).to(device)
@@ -221,7 +225,15 @@ def train_cartridge(
         end_idx = start_idx + target_len
         assistant_logits = outputs.logits[0, start_idx:end_idx, :]
         loss = _sparse_distillation_loss(assistant_logits, example.assistant_supervision)
-        loss_history.append(float(loss.item()))
+        loss_value = float(loss.item())
+        loss_history.append(loss_value)
+        if loss_value < best_loss:
+            best_loss = loss_value
+            best_step = step_idx + 1
+            best_state_dict = {
+                key: value.detach().cpu().clone()
+                for key, value in cartridge.state_dict().items()
+            }
         (loss / gradient_accumulation_steps).backward()
 
         should_step = ((step_idx - start_step + 1) % gradient_accumulation_steps) == 0
@@ -230,8 +242,11 @@ def train_cartridge(
             scheduler.step()
             optimizer.zero_grad(set_to_none=True)
 
+    final_cartridge_path = output_dir / f"{slice_id}_final_cartridge.pt"
     cartridge_path = output_dir / f"{slice_id}_cartridge.pt"
     checkpoint_path = output_dir / f"{slice_id}_checkpoint.pt"
+    cartridge.save(final_cartridge_path)
+    cartridge.load_state_dict(best_state_dict)
     cartridge.save(cartridge_path)
     _save_checkpoint(
         path=checkpoint_path,
@@ -247,9 +262,12 @@ def train_cartridge(
         "slice_id": slice_id,
         "dataset_path": str(Path(dataset_path).resolve()),
         "cartridge_path": str(cartridge_path.resolve()),
+        "final_cartridge_path": str(final_cartridge_path.resolve()),
         "checkpoint_path": str(checkpoint_path.resolve()),
         "steps": steps,
         "initial_loss": loss_history[0],
+        "best_loss": best_loss,
+        "best_step": best_step,
         "final_loss": loss_history[-1],
         "loss_history": loss_history,
         "loss_decreased": loss_history[-1] < loss_history[0],
