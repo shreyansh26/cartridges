@@ -8,8 +8,8 @@ outputs/
 wandb/
 *.pt
 *.jsonl
-.tmp/
-data/
-cartridges_ref/
+/.tmp/
+/data/
+/cartridges_ref/
 
 .DS_Store
