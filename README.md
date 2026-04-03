@@ -114,9 +114,3 @@ Observed summary for `cartridge_512`:
 - Baseline follow-up latency: `394.76 ms`
 - Cartridge follow-up latency: `268.13 ms`
 - One-time build time: `121.36 s`
-
-Sanity check for the `512` run:
-
-- Empty cartridge predictions: `0`
-- Average completion tokens: `12.8`
-- Max completion tokens: `33`
