@@ -732,8 +732,13 @@ def write_run_report(
 
     report_dir = Path(run_dir) / "report"
     report_dir.mkdir(parents=True, exist_ok=True)
+    semantic_judge_enabled = any(
+        "baseline_semantic_match_rate" in item or "cartridge_semantic_match_rate" in item
+        for item in budget_summaries
+    )
     summary = {
         "experiment_name": experiment_name,
+        "semantic_judge_enabled": semantic_judge_enabled,
         "budgets": budget_summaries,
     }
     write_json(report_dir / "summary.json", summary)
@@ -742,17 +747,22 @@ def write_run_report(
         f"# {experiment_name} Benchmark",
         "",
         (
-            "| budget | baseline_em | cartridge_em | compression | decode_ratio | "
-            "prefill_speedup | e2e_speedup | build_time_s | "
+            "| budget | baseline_em | cartridge_em | baseline_sem | cartridge_sem | "
+            "compression | decode_ratio | prefill_speedup | e2e_speedup | build_time_s | "
             "baseline_followup_ms | cartridge_followup_ms |"
         ),
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for item in budget_summaries:
+        baseline_semantic = item.get("baseline_semantic_match_rate")
+        cartridge_semantic = item.get("cartridge_semantic_match_rate")
         lines.append(
             f"| {item['budget_label']} | {item['baseline_exact_match_rate']:.3f} | "
-            f"{item['cartridge_exact_match_rate']:.3f} | {item['avg_compression_ratio']:.3f}x | "
-            f"{item['avg_throughput_ratio']:.3f}x | {item['avg_prefill_speedup_ratio']:.3f}x | "
+            f"{item['cartridge_exact_match_rate']:.3f} | "
+            f"{'n/a' if baseline_semantic is None else f'{baseline_semantic:.3f}'} | "
+            f"{'n/a' if cartridge_semantic is None else f'{cartridge_semantic:.3f}'} | "
+            f"{item['avg_compression_ratio']:.3f}x | {item['avg_throughput_ratio']:.3f}x | "
+            f"{item['avg_prefill_speedup_ratio']:.3f}x | "
             f"{item['avg_end_to_end_speedup_ratio']:.3f}x | "
             f"{item['compression_build_seconds']:.2f} | "
             f"{item['baseline_followup_total_latency_ms']:.2f} | "
@@ -761,6 +771,7 @@ def write_run_report(
     report_path = report_dir / "comparison.md"
     report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return {
+        **summary,
         "summary_path": str((report_dir / "summary.json").resolve()),
         "report_path": str(report_path.resolve()),
     }

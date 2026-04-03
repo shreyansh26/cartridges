@@ -9,6 +9,7 @@ from cartridges.benchmarks.text_benchmark import (
     _assistant_target_token_ids,
     generate_teacher_answers,
     write_budget_report,
+    write_run_report,
 )
 
 
@@ -132,3 +133,33 @@ def test_write_budget_report_with_semantic_judge(tmp_path) -> None:
     ]
     assert comparison_rows[0]["baseline_semantic_match"] is True
     assert comparison_rows[0]["cartridge_semantic_match"] is True
+
+
+def test_write_run_report_surfaces_semantic_columns(tmp_path) -> None:
+    summary = write_run_report(
+        experiment_name="demo",
+        run_dir=tmp_path,
+        budget_summaries=[
+            {
+                "budget_label": "cartridge_128",
+                "baseline_exact_match_rate": 0.9,
+                "cartridge_exact_match_rate": 0.8,
+                "baseline_semantic_match_rate": 1.0,
+                "cartridge_semantic_match_rate": 0.95,
+                "avg_compression_ratio": 16.0,
+                "avg_throughput_ratio": 1.1,
+                "avg_prefill_speedup_ratio": 8.0,
+                "avg_end_to_end_speedup_ratio": 1.9,
+                "compression_build_seconds": 12.0,
+                "baseline_followup_total_latency_ms": 300.0,
+                "cartridge_followup_total_latency_ms": 180.0,
+            }
+        ],
+    )
+
+    assert summary["semantic_judge_enabled"] is True
+    report_path = tmp_path / "report" / "comparison.md"
+    report_text = report_path.read_text(encoding="utf-8")
+    assert "baseline_sem" in report_text
+    assert "cartridge_sem" in report_text
+    assert "| cartridge_128 | 0.900 | 0.800 | 1.000 | 0.950 |" in report_text
