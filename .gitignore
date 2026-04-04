@@ -9,6 +9,5 @@ wandb/
 *.pt
 *.jsonl
 /.tmp/
-/cartridges_ref/
 
 .DS_Store
