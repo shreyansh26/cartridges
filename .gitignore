@@ -10,6 +10,12 @@ outputs/*
 outputs/wikipedia_india/*
 !outputs/wikipedia_india/runs/
 outputs/wikipedia_india/runs/*
+!outputs/wikipedia_india/runs/india_1024_stable/
+outputs/wikipedia_india/runs/india_1024_stable/*
+!outputs/wikipedia_india/runs/india_1024_stable/report/
+outputs/wikipedia_india/runs/india_1024_stable/report/*
+!outputs/wikipedia_india/runs/india_1024_stable/report/comparison.md
+!outputs/wikipedia_india/runs/india_1024_stable/report/summary.json
 !outputs/wikipedia_india/runs/india_512_stable/
 outputs/wikipedia_india/runs/india_512_stable/*
 !outputs/wikipedia_india/runs/india_512_stable/report/

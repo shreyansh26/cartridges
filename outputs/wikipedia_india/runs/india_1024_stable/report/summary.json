@@ -1,0 +1,38 @@
+{
+  "experiment_name": "wikipedia_india",
+  "semantic_judge_enabled": true,
+  "budgets": [
+    {
+      "experiment_name": "wikipedia_india",
+      "budget_label": "cartridge_1024",
+      "cartridge_tokens": 1024,
+      "num_questions": 20,
+      "bootstrap_question_count": 120,
+      "train_steps": 240,
+      "compression_build_seconds": 125.34829370770603,
+      "baseline_exact_match_rate": 0.9,
+      "cartridge_exact_match_rate": 0.55,
+      "avg_compression_ratio": 8.071630859375,
+      "avg_throughput_ratio": 0.9919170791552543,
+      "avg_prefill_speedup_ratio": 8.18538149409093,
+      "avg_end_to_end_speedup_ratio": 1.7319201095605614,
+      "baseline_first_total_latency_ms": 424.3585541844368,
+      "cartridge_first_total_latency_ms": 360.9461441040039,
+      "baseline_followup_total_latency_ms": 400.8350409567356,
+      "cartridge_followup_total_latency_ms": 238.39872320074784,
+      "baseline_first_prefill_ms": 235.08391249924898,
+      "cartridge_first_prefill_ms": 42.635231018066406,
+      "baseline_followup_prefill_ms": 234.77133128203843,
+      "cartridge_followup_prefill_ms": 28.630916997006064,
+      "baseline_session_total_ms": 8040.224332362413,
+      "cartridge_query_session_total_ms": 4890.521884918213,
+      "baseline_semantic_match_rate": 1.0,
+      "cartridge_semantic_match_rate": 1.0,
+      "cartridge_amortized_session_total_ms": 130238.81559262425,
+      "followup_latency_advantage_ms": 162.43631775598777,
+      "break_even_query_count": 771.6765280040671,
+      "comparison_path": "/mnt/ssd1/shreyansh/home_dir/cartridges/outputs/wikipedia_india/runs/india_1024_stable/cartridge_1024/report/comparison.jsonl",
+      "report_path": "/mnt/ssd1/shreyansh/home_dir/cartridges/outputs/wikipedia_india/runs/india_1024_stable/cartridge_1024/report/comparison.md"
+    }
+  ]
+}
