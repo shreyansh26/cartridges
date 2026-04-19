@@ -334,3 +334,15 @@ This benchmark also produces many local artifacts (not in the repo):
 - vLLM logs
 
 Those are written under `outputs/{experiment}/runs/{run_id}/`.
+
+## References
+
+```bibtex
+@article{eyuboglu2025cartridges,
+  title={Cartridges: Compressing Large-Scale Language Model Contexts with Continual Memory},
+  author={Eyuboglu, Sabri and others},
+  journal={arXiv preprint arXiv:2506.06266},
+  year={2025},
+  url={https://arxiv.org/abs/2506.06266}
+}
+```
