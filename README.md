@@ -4,9 +4,9 @@ This repo is a clean, single-GPU reproduction of the Cartridges idea: compress a
 
 The public entrypoints are:
 
-- [run_benchmark.py](/mnt/ssd1/shreyansh/home_dir/cartridges/scripts/run_benchmark.py)
-- [serve_vllm.py](/mnt/ssd1/shreyansh/home_dir/cartridges/scripts/serve_vllm.py)
-- [check_env.py](/mnt/ssd1/shreyansh/home_dir/cartridges/scripts/check_env.py)
+- [run_benchmark.py](scripts/run_benchmark.py)
+- [serve_vllm.py](scripts/serve_vllm.py)
+- [check_env.py](scripts/check_env.py)
 
 The standardized dataset layout is:
 
@@ -16,12 +16,12 @@ The standardized dataset layout is:
 
 Tracked example datasets in this repo:
 
-- [wikipedia_india/data.txt](/mnt/ssd1/shreyansh/home_dir/cartridges/data/wikipedia_india/data.txt)
-- [wikipedia_india/eval_spec.json](/mnt/ssd1/shreyansh/home_dir/cartridges/data/wikipedia_india/eval_spec.json)
-- [wikipedia_india/metadata.json](/mnt/ssd1/shreyansh/home_dir/cartridges/data/wikipedia_india/metadata.json)
-- [wikipedia_history_us/data.txt](/mnt/ssd1/shreyansh/home_dir/cartridges/data/wikipedia_history_us/data.txt)
-- [wikipedia_history_us/eval_spec.json](/mnt/ssd1/shreyansh/home_dir/cartridges/data/wikipedia_history_us/eval_spec.json)
-- [wikipedia_history_us/metadata.json](/mnt/ssd1/shreyansh/home_dir/cartridges/data/wikipedia_history_us/metadata.json)
+- [wikipedia_india/data.txt](data/wikipedia_india/data.txt)
+- [wikipedia_india/eval_spec.json](data/wikipedia_india/eval_spec.json)
+- [wikipedia_india/metadata.json](data/wikipedia_india/metadata.json)
+- [wikipedia_history_us/data.txt](data/wikipedia_history_us/data.txt)
+- [wikipedia_history_us/eval_spec.json](data/wikipedia_history_us/eval_spec.json)
+- [wikipedia_history_us/metadata.json](data/wikipedia_history_us/metadata.json)
 
 ## Quickstart
 
@@ -132,7 +132,7 @@ Where:
 - `q_t(i)` is the sparse teacher distribution over candidate next tokens
 - `p_theta(i | prompt, cartridge)` is the model distribution when the learned cartridge is injected as past KV state
 
-This is implemented in [cartridge.py](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/train/cartridge.py).
+This is implemented in [cartridge.py](src/cartridges/train/cartridge.py).
 
 ### Why Prefix Initialization Can Still Encode Later Facts
 
@@ -168,7 +168,7 @@ flowchart LR
     H --> I
 ```
 
-The core cartridge object is [cartridge.py](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/core/cartridge.py). The important details are:
+The core cartridge object is [cartridge.py](src/cartridges/core/cartridge.py). The important details are:
 
 - `initialize_from_prefix_text(...)` seeds the cartridge from the first `p` tokens of the corpus.
 - `TrainableKVCartridge` stores one KV tensor pair per transformer layer.
@@ -226,42 +226,42 @@ This means the retriever does not participate in training the cartridge tensors.
 
 ## What `run_benchmark.py` Actually Does
 
-When you run [run_benchmark.py](/mnt/ssd1/shreyansh/home_dir/cartridges/scripts/run_benchmark.py), the control flow is:
+When you run [run_benchmark.py](scripts/run_benchmark.py), the control flow is:
 
-1. It resolves `data/{experiment}/` with [load_experiment_inputs(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/data/text_dataset.py).
+1. It resolves `data/{experiment}/` with [load_experiment_inputs(...)](src/cartridges/data/text_dataset.py).
 2. It copies the input files into the run directory so the run stays self-contained.
-3. It tokenizes `data.txt` into a manifest with [build_text_manifest(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/data/text_dataset.py).
-4. It loads all chunk records with [load_corpus_slices(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/data/text_dataset.py).
-5. It expands `eval_spec.json` into JSONL eval rows with [build_eval_rows_from_spec(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/data/text_dataset.py).
-6. It embeds every chunk with [build_retrieval_index(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/benchmarks/text_benchmark.py) and routes held-out questions with [route_eval_questions(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/benchmarks/text_benchmark.py).
-7. If `--base-url` is not provided, it launches [serve_vllm.py](/mnt/ssd1/shreyansh/home_dir/cartridges/scripts/serve_vllm.py) and waits for readiness.
-8. For each chunk, it generates bootstrap question-answer candidates with [generate_bootstrap_questions(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/benchmarks/text_benchmark.py).
-9. For each chunk, it materializes exact teacher answers with [generate_teacher_answers(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/benchmarks/text_benchmark.py).
+3. It tokenizes `data.txt` into a manifest with [build_text_manifest(...)](src/cartridges/data/text_dataset.py).
+4. It loads all chunk records with [load_corpus_slices(...)](src/cartridges/data/text_dataset.py).
+5. It expands `eval_spec.json` into JSONL eval rows with [build_eval_rows_from_spec(...)](src/cartridges/data/text_dataset.py).
+6. It embeds every chunk with [build_retrieval_index(...)](src/cartridges/benchmarks/text_benchmark.py) and routes held-out questions with [route_eval_questions(...)](src/cartridges/benchmarks/text_benchmark.py).
+7. If `--base-url` is not provided, it launches [serve_vllm.py](scripts/serve_vllm.py) and waits for readiness.
+8. For each chunk, it generates bootstrap question-answer candidates with [generate_bootstrap_questions(...)](src/cartridges/benchmarks/text_benchmark.py).
+9. For each chunk, it materializes exact teacher answers with [generate_teacher_answers(...)](src/cartridges/benchmarks/text_benchmark.py).
 10. It shuts down the managed vLLM server and clears lingering vLLM GPU workers before starting any local HF work.
-11. For each chunk, it converts teacher answers into sparse token-level supervision with [build_training_dataset(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/benchmarks/text_benchmark.py).
-12. It runs the full-context local baseline with [run_local_hf_matched_eval(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/eval/baseline.py).
-13. For each requested cartridge budget and each chunk, it trains one cartridge with [train_cartridge(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/train/cartridge.py).
-14. It evaluates each budget with routed [run_cartridge_eval(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/eval/cartridge.py), which injects the cartridge selected by retrieval for that question.
-15. It merges baseline and routed-cartridge outputs into a per-budget report with [write_budget_report(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/benchmarks/text_benchmark.py).
-16. It writes the aggregate multi-budget report with [write_run_report(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/benchmarks/text_benchmark.py).
+11. For each chunk, it converts teacher answers into sparse token-level supervision with [build_training_dataset(...)](src/cartridges/benchmarks/text_benchmark.py).
+12. It runs the full-context local baseline with [run_local_hf_matched_eval(...)](src/cartridges/eval/baseline.py).
+13. For each requested cartridge budget and each chunk, it trains one cartridge with [train_cartridge(...)](src/cartridges/train/cartridge.py).
+14. It evaluates each budget with routed [run_cartridge_eval(...)](src/cartridges/eval/cartridge.py), which injects the cartridge selected by retrieval for that question.
+15. It merges baseline and routed-cartridge outputs into a per-budget report with [write_budget_report(...)](src/cartridges/benchmarks/text_benchmark.py).
+16. It writes the aggregate multi-budget report with [write_run_report(...)](src/cartridges/benchmarks/text_benchmark.py).
 17. It writes `run_manifest.json` and updates `outputs/{experiment}/latest`.
 
 ## Which File Implements What
 
 The active benchmark path lives in these tracked files:
 
-- [run_benchmark.py](/mnt/ssd1/shreyansh/home_dir/cartridges/scripts/run_benchmark.py): top-level orchestration, vLLM lifecycle, run directory management
-- [serve_vllm.py](/mnt/ssd1/shreyansh/home_dir/cartridges/scripts/serve_vllm.py): thin wrapper around `vllm serve`
-- [text_dataset.py](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/data/text_dataset.py): input loading, multi-slice manifest construction, eval row materialization
-- [common.py](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/data/common.py): stable hashing and JSON/JSONL writing
-- [text_benchmark.py](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/benchmarks/text_benchmark.py): retrieval indexing, bootstrap generation, teacher answers, supervision dataset building, semantic judge, report writing
-- [vllm_openai.py](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/clients/vllm_openai.py): OpenAI-compatible vLLM client, tokenizer parity checks, optional teacher logprob fallback
-- [cartridge.py](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/core/cartridge.py): trainable KV cartridge object and prefix initialization
-- [cartridge.py](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/train/cartridge.py): distillation training loop and checkpoint selection
-- [common.py](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/eval/common.py): prompt building, exact-match scoring, canonical KV byte accounting
-- [baseline.py](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/eval/baseline.py): full-context baseline evaluation
-- [cartridge.py](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/eval/cartridge.py): routed cartridge-backed inference evaluation
-- [config.py](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/config.py): model and environment defaults
+- [run_benchmark.py](scripts/run_benchmark.py): top-level orchestration, vLLM lifecycle, run directory management
+- [serve_vllm.py](scripts/serve_vllm.py): thin wrapper around `vllm serve`
+- [text_dataset.py](src/cartridges/data/text_dataset.py): input loading, multi-slice manifest construction, eval row materialization
+- [common.py](src/cartridges/data/common.py): stable hashing and JSON/JSONL writing
+- [text_benchmark.py](src/cartridges/benchmarks/text_benchmark.py): retrieval indexing, bootstrap generation, teacher answers, supervision dataset building, semantic judge, report writing
+- [vllm_openai.py](src/cartridges/clients/vllm_openai.py): OpenAI-compatible vLLM client, tokenizer parity checks, optional teacher logprob fallback
+- [cartridge.py](src/cartridges/core/cartridge.py): trainable KV cartridge object and prefix initialization
+- [cartridge.py](src/cartridges/train/cartridge.py): distillation training loop and checkpoint selection
+- [common.py](src/cartridges/eval/common.py): prompt building, exact-match scoring, canonical KV byte accounting
+- [baseline.py](src/cartridges/eval/baseline.py): full-context baseline evaluation
+- [cartridge.py](src/cartridges/eval/cartridge.py): routed cartridge-backed inference evaluation
+- [config.py](src/cartridges/config.py): model and environment defaults
 
 ## Current Limits
 
@@ -275,8 +275,8 @@ The repo has the aggregate run reports for the following experiments:
 
 ### `wikipedia_history_us`
 
-- Aggregate report: [comparison.md](/mnt/ssd1/shreyansh/home_dir/cartridges/outputs/wikipedia_history_us/runs/history_us_512_1024_stable/report/comparison.md)
-- Aggregate summary: [summary.json](/mnt/ssd1/shreyansh/home_dir/cartridges/outputs/wikipedia_history_us/runs/history_us_512_1024_stable/report/summary.json)
+- Aggregate report: [comparison.md](outputs/wikipedia_history_us/runs/history_us_512_1024_stable/report/comparison.md)
+- Aggregate summary: [summary.json](outputs/wikipedia_history_us/runs/history_us_512_1024_stable/report/summary.json)
 
 #### `cartridge_1024`
 
@@ -316,8 +316,8 @@ The `1024` budget is the better balanced result on this page: it keeps semantic 
 
 #### `cartridge_1024`
 
-- Aggregate report: [comparison.md](/mnt/ssd1/shreyansh/home_dir/cartridges/outputs/wikipedia_india/runs/india_1024_stable/report/comparison.md)
-- Aggregate summary: [summary.json](/mnt/ssd1/shreyansh/home_dir/cartridges/outputs/wikipedia_india/runs/india_1024_stable/report/summary.json)
+- Aggregate report: [comparison.md](outputs/wikipedia_india/runs/india_1024_stable/report/comparison.md)
+- Aggregate summary: [summary.json](outputs/wikipedia_india/runs/india_1024_stable/report/summary.json)
 
 Observed numbers:
 
@@ -334,8 +334,8 @@ Observed numbers:
 
 #### `cartridge_512`
 
-- Aggregate report: [comparison.md](/mnt/ssd1/shreyansh/home_dir/cartridges/outputs/wikipedia_india/runs/india_512_stable/report/comparison.md)
-- Aggregate summary: [summary.json](/mnt/ssd1/shreyansh/home_dir/cartridges/outputs/wikipedia_india/runs/india_512_stable/report/summary.json)
+- Aggregate report: [comparison.md](outputs/wikipedia_india/runs/india_512_stable/report/comparison.md)
+- Aggregate summary: [summary.json](outputs/wikipedia_india/runs/india_512_stable/report/summary.json)
 
 Observed numbers:
 
