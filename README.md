@@ -278,10 +278,37 @@ The repo has the aggregate run reports for the following experiments:
 - Aggregate report: [comparison.md](/mnt/ssd1/shreyansh/home_dir/cartridges/outputs/wikipedia_history_us/runs/history_us_512_1024_stable/report/comparison.md)
 - Aggregate summary: [summary.json](/mnt/ssd1/shreyansh/home_dir/cartridges/outputs/wikipedia_history_us/runs/history_us_512_1024_stable/report/summary.json)
 
-Observed numbers from the same run:
+### `cartridge_1024`
 
-- `cartridge_512`: exact match `0.10`, semantic match `0.85`, retrieval hit `1.00`, compression `47.31x`, prefill speedup `34.50x`, end-to-end speedup `5.30x`, follow-up latency `344.31 ms`, one-time build time `401.31 s`
-- `cartridge_1024`: exact match `0.10`, semantic match `1.00`, retrieval hit `1.00`, compression `23.66x`, prefill speedup `37.79x`, end-to-end speedup `6.00x`, follow-up latency `209.97 ms`, one-time build time `401.03 s`
+Observed numbers:
+
+- Baseline exact match: `0.10`
+- Cartridge exact match: `0.10`
+- Baseline semantic match: `1.00`
+- Cartridge semantic match: `1.00`
+- Retrieval hit rate: `1.00`
+- Compression ratio: `23.66x`
+- Prefill speedup: `37.79x`
+- End-to-end speedup: `6.00x`
+- Baseline follow-up latency: `1171.22 ms`
+- Cartridge follow-up latency: `209.97 ms`
+- One-time build time: `401.03 s`
+
+### `cartridge_512`
+
+Observed numbers:
+
+- Baseline exact match: `0.10`
+- Cartridge exact match: `0.10`
+- Baseline semantic match: `1.00`
+- Cartridge semantic match: `0.85`
+- Retrieval hit rate: `1.00`
+- Compression ratio: `47.31x`
+- Prefill speedup: `34.50x`
+- End-to-end speedup: `5.30x`
+- Baseline follow-up latency: `1171.22 ms`
+- Cartridge follow-up latency: `344.31 ms`
+- One-time build time: `401.31 s`
 
 The `1024` budget is the better balanced result on this page: it keeps semantic quality at parity with the full-context baseline while still cutting follow-up latency by about `6x`.
 
