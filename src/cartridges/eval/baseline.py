@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Baseline evaluators for full-context prompting."""
 
 import re

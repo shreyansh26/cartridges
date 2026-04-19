@@ -1,0 +1,162 @@
+[
+  {
+    "id": "history-us-q01",
+    "query": "In what year was Jamestown established in modern-day Virginia?",
+    "answer_prompt": "Answer with only the 4-digit year.",
+    "answers": [
+      "1607"
+    ]
+  },
+  {
+    "id": "history-us-q02",
+    "query": "In what year did English pilgrims land at Plymouth?",
+    "answer_prompt": "Answer with only the 4-digit year.",
+    "answers": [
+      "1620"
+    ]
+  },
+  {
+    "id": "history-us-q03",
+    "query": "Which acts were designed to end self-government in the colonies?",
+    "answer_prompt": "Answer with only the act name.",
+    "answers": [
+      "Intolerable Acts"
+    ]
+  },
+  {
+    "id": "history-us-q04",
+    "query": "Which document was signed on September 17, 1787 and later ratified by the Thirteen Colonies?",
+    "answer_prompt": "Answer with only the document name exactly as it appears in the context.",
+    "answers": [
+      "U.S. Constitution"
+    ]
+  },
+  {
+    "id": "history-us-q05",
+    "query": "Which purchase in 1803 doubled the size of the United States?",
+    "answer_prompt": "Answer with only the purchase name.",
+    "answers": [
+      "Louisiana Purchase"
+    ]
+  },
+  {
+    "id": "history-us-q06",
+    "query": "What Protestant revival movement affected virtually all of society during the early 19th century?",
+    "answer_prompt": "Answer with only the movement name.",
+    "answers": [
+      "Second Great Awakening"
+    ]
+  },
+  {
+    "id": "history-us-q07",
+    "query": "During the Era of Good Feelings, which doctrine proclaimed that European powers should no longer colonize or interfere in the Americas?",
+    "answer_prompt": "Answer with only the doctrine name.",
+    "answers": [
+      "Monroe Doctrine"
+    ]
+  },
+  {
+    "id": "history-us-q08",
+    "query": "Which act repealed the Missouri Compromise in 1854?",
+    "answer_prompt": "Answer with only the act name.",
+    "answers": [
+      "Kansas\u2013Nebraska Act"
+    ]
+  },
+  {
+    "id": "history-us-q09",
+    "query": "Which act required free states to cooperate with slave owners when attempting to capture escaped slaves?",
+    "answer_prompt": "Answer with only the act name.",
+    "answers": [
+      "Fugitive Slave Act"
+    ]
+  },
+  {
+    "id": "history-us-q10",
+    "query": "Which Reconstruction amendment outlawed slavery in 1865?",
+    "answer_prompt": "Answer with only the amendment name.",
+    "answers": [
+      "Thirteenth Amendment"
+    ]
+  },
+  {
+    "id": "history-us-q11",
+    "query": "What board managed economic mobilization during World War II?",
+    "answer_prompt": "Answer with only the board name.",
+    "answers": [
+      "War Production Board"
+    ]
+  },
+  {
+    "id": "history-us-q12",
+    "query": "Which alliance did the United States form in 1949?",
+    "answer_prompt": "Answer with only the alliance name.",
+    "answers": [
+      "North Atlantic Treaty Organization"
+    ]
+  },
+  {
+    "id": "history-us-q13",
+    "query": "Which pact did the Soviets form in response to NATO?",
+    "answer_prompt": "Answer with only the pact name.",
+    "answers": [
+      "Warsaw Pact"
+    ]
+  },
+  {
+    "id": "history-us-q14",
+    "query": "What scandal forced Richard Nixon to resign?",
+    "answer_prompt": "Answer with only the scandal name.",
+    "answers": [
+      "Watergate scandal"
+    ]
+  },
+  {
+    "id": "history-us-q15",
+    "query": "What threat prevented both superpowers from fighting a direct nuclear war?",
+    "answer_prompt": "Answer with only the phrase used in the context.",
+    "answers": [
+      "mutually assured destruction"
+    ]
+  },
+  {
+    "id": "history-us-q16",
+    "query": "Which law increased the government's power to monitor communications after the September 11 attacks?",
+    "answer_prompt": "Answer with only the law name.",
+    "answers": [
+      "Patriot Act"
+    ]
+  },
+  {
+    "id": "history-us-q17",
+    "query": "What strategy did Bush use in 2007 by deploying more troops to Iraq?",
+    "answer_prompt": "Answer with only the strategy name exactly as it appears in the context.",
+    "answers": [
+      "the surge"
+    ]
+  },
+  {
+    "id": "history-us-q18",
+    "query": "Which terrorist organization carried out the September 11 attacks?",
+    "answer_prompt": "Answer with only the organization name.",
+    "answers": [
+      "al-Qaeda"
+    ]
+  },
+  {
+    "id": "history-us-q19",
+    "query": "What hurricane killed 1,800 people around New Orleans in 2005?",
+    "answer_prompt": "Answer with only the hurricane name.",
+    "answers": [
+      "Hurricane Katrina"
+    ]
+  },
+  {
+    "id": "history-us-q20",
+    "query": "What act, informally called \"Obamacare\", did Barack Obama sign?",
+    "answer_prompt": "Answer with only the act name.",
+    "answers": [
+      "Patient Protection and Affordable Care Act"
+    ]
+  }
+]

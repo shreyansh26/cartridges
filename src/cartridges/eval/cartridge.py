@@ -1,10 +1,9 @@
-from __future__ import annotations
-
 """Matched-backend evaluation for cartridge-backed inference."""
 
 import re
 import time
 from pathlib import Path
+from typing import Any
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -47,10 +46,69 @@ def _clean_completion(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _route_for_rows(
+    *,
+    rows: list[dict[str, Any]],
+    cartridge_path: str | Path | None,
+    cartridge_paths: dict[str, str | Path] | None,
+    retrieval_routes: list[dict[str, Any]] | None,
+) -> tuple[dict[str, Path], dict[str, dict[str, Any]]]:
+    """Resolve which cartridge file each eval row should use.
+
+    Single-chunk runs pass one ``cartridge_path`` and skip retrieval entirely. Multi-chunk runs
+    pass ``cartridge_paths`` plus ``retrieval_routes``; the returned route map tells
+    ``run_cartridge_eval`` which slice-specific cartridge to load for each question.
+    """
+    if cartridge_paths is None:
+        if cartridge_path is None:
+            raise ValueError("Either cartridge_path or cartridge_paths must be provided.")
+        resolved_paths = {"default": Path(cartridge_path)}
+    else:
+        resolved_paths = {
+            str(slice_id): Path(path)
+            for slice_id, path in cartridge_paths.items()
+        }
+        if not resolved_paths:
+            raise ValueError("cartridge_paths must not be empty.")
+
+    if retrieval_routes is None:
+        if len(resolved_paths) != 1:
+            raise ValueError(
+                "retrieval_routes are required when evaluating more than one cartridge slice."
+            )
+        # Degenerate single-slice case: every prompt uses the same cartridge, and retrieval
+        # diagnostics are left empty because no routing decision was made.
+        only_slice_id = next(iter(resolved_paths))
+        return resolved_paths, {
+            f"{row['sample_id']}::{row['row_hash']}": {
+                "retrieved_slice_id": only_slice_id,
+                "retrieval_score": None,
+                "retrieval_answer_present": None,
+            }
+            for row in rows
+        }
+
+    routes_by_prompt_id = {str(route["prompt_id"]): route for route in retrieval_routes}
+    missing_prompt_ids = [
+        f"{row['sample_id']}::{row['row_hash']}"
+        for row in rows
+        if f"{row['sample_id']}::{row['row_hash']}" not in routes_by_prompt_id
+    ]
+    if missing_prompt_ids:
+        raise ValueError(f"Missing retrieval routes for prompt ids: {missing_prompt_ids}")
+    for route in routes_by_prompt_id.values():
+        slice_id = str(route["retrieved_slice_id"])
+        if slice_id not in resolved_paths:
+            raise ValueError(f"No cartridge path found for routed slice_id={slice_id}.")
+    return resolved_paths, routes_by_prompt_id
+
+
 def run_cartridge_eval(
     *,
     eval_path: str | Path,
-    cartridge_path: str | Path,
+    cartridge_path: str | Path | None = None,
+    cartridge_paths: dict[str, str | Path] | None = None,
+    retrieval_routes: list[dict[str, Any]] | None = None,
     output_path: str | Path,
     device: str,
     sample_id: str | None = None,
@@ -65,6 +123,12 @@ def run_cartridge_eval(
         rows = rows[:max_samples]
     if not rows:
         raise ValueError("No evaluation rows selected for cartridge evaluation.")
+    resolved_paths, routes_by_prompt_id = _route_for_rows(
+        rows=rows,
+        cartridge_path=cartridge_path,
+        cartridge_paths=cartridge_paths,
+        retrieval_routes=retrieval_routes,
+    )
 
     tokenizer = AutoTokenizer.from_pretrained(DEFAULT_MATRIX.model_id)
     model = AutoModelForCausalLM.from_pretrained(
@@ -74,12 +138,21 @@ def run_cartridge_eval(
     )
     model.to(device)
     model.eval()
-    cartridge = TrainableKVCartridge.load(cartridge_path, device=device)
+    cartridges = {
+        slice_id: TrainableKVCartridge.load(path, device=device)
+        for slice_id, path in resolved_paths.items()
+    }
 
     eos_token_id = tokenizer.eos_token_id
     records: list[EvalRecord] = []
     with torch.inference_mode():
         for row in rows:
+            prompt_id = f"{row['sample_id']}::{row['row_hash']}"
+            route = routes_by_prompt_id[prompt_id]
+            retrieved_slice_id = str(route["retrieved_slice_id"])
+            # In routed mode, the retrieved slice decides which precomputed cartridge stands in
+            # for the original corpus chunk. That is the only context loaded here.
+            cartridge = cartridges[retrieved_slice_id]
             # Reconstruct the baseline prompt length only for byte-for-byte KV accounting.
             baseline_prompt = tokenizer.apply_chat_template(
                 build_messages(row),
@@ -97,6 +170,8 @@ def run_cartridge_eval(
                 add_generation_prompt=True,
                 chat_template_kwargs={"enable_thinking": False},
             )
+            # ``input_ids`` contains only the user-side question prompt. The heavy context prefill
+            # has already been compressed into ``past_key_values`` inside the cartridge.
             encoded = tokenizer(prompt_text, return_tensors="pt", add_special_tokens=False)
             input_ids = encoded["input_ids"].to(device)
 
@@ -122,6 +197,8 @@ def run_cartridge_eval(
                 prefill_ms = None
 
             generated_ids: list[int] = []
+            # After the first forward pass, decoding proceeds exactly like ordinary autoregressive
+            # generation except that the cache already contains the learned cartridge state.
             past_key_values = outputs.past_key_values
             next_token = torch.argmax(outputs.logits[:, -1, :], dim=-1, keepdim=True)
 
@@ -173,6 +250,8 @@ def run_cartridge_eval(
             if prefill_ms is not None and decode_ms is not None:
                 total_latency_ms = prefill_ms + decode_ms
 
+            # Metadata preserves the routing decision so the final report can separate "retriever
+            # chose the wrong chunk" from "cartridge answered the routed chunk poorly".
             records.append(
                 EvalRecord(
                     prompt_id=f"{row['sample_id']}::{row['row_hash']}",
@@ -193,7 +272,10 @@ def run_cartridge_eval(
                         "query": row["query"],
                         "baseline_canonical_kv_bytes": baseline_bytes,
                         "device": device,
-                        "cartridge_path": str(Path(cartridge_path).resolve()),
+                        "cartridge_path": str(resolved_paths[retrieved_slice_id].resolve()),
+                        "retrieved_slice_id": retrieved_slice_id,
+                        "retrieval_score": route.get("retrieval_score"),
+                        "retrieval_answer_present": route.get("retrieval_answer_present"),
                     },
                 )
             )

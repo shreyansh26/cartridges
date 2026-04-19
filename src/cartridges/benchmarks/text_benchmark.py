@@ -1,6 +1,13 @@
-from __future__ import annotations
+"""Benchmark helpers for bootstrap synthesis, supervision building, and reporting.
 
-"""Benchmark helpers for bootstrap synthesis, supervision building, and reporting."""
+Training data pipeline (see ``run_benchmark``): ``generate_bootstrap_questions`` asks the
+vLLM teacher for ``QUESTION ||| ANSWER`` lines and stores the answer side as
+``expected_answer``. ``generate_teacher_answers`` turns each bootstrap row into an
+``answer_record`` with ``user_message`` and ``assistant_text`` (the short answer).
+``build_training_dataset`` runs the local HF teacher on that chat, emits
+``assistant_token_ids`` + per-token ``assistant_supervision`` (top-k logprobs), and
+writes JSONL consumed by ``cartridges.train.cartridge.load_training_examples``.
+"""
 
 import json
 import re
@@ -10,7 +17,8 @@ from statistics import mean
 from typing import Any
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+import torch.nn.functional as F
+from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer
 
 from cartridges.clients import VLLMClient
 from cartridges.config import DEFAULT_MATRIX
@@ -98,6 +106,175 @@ BOOTSTRAP_ANSWER_PROMPT = (
     "Answer with only the shortest exact phrase copied from the context "
     "that fully answers the question."
 )
+RETRIEVAL_MODEL_ID = "BAAI/bge-small-en-v1.5"
+RETRIEVAL_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
+
+
+def _mean_pool_embeddings(last_hidden_state: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+    """Mean-pool token embeddings while ignoring padding positions."""
+    expanded_mask = attention_mask.unsqueeze(-1).to(last_hidden_state.dtype)
+    masked = last_hidden_state * expanded_mask
+    token_count = expanded_mask.sum(dim=1).clamp_min(1.0)
+    return masked.sum(dim=1) / token_count
+
+
+def _embed_texts(
+    *,
+    texts: list[str],
+    model_id: str = RETRIEVAL_MODEL_ID,
+    is_query: bool,
+    batch_size: int = 8,
+    max_length: int = 512,
+) -> torch.Tensor:
+    """Encode texts into normalized CPU embeddings using a lightweight BGE encoder."""
+    if not texts:
+        raise ValueError("texts must not be empty.")
+
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    model = AutoModel.from_pretrained(model_id)
+    model.eval()
+
+    prefix = RETRIEVAL_QUERY_PREFIX if is_query else ""
+    vectors: list[torch.Tensor] = []
+    with torch.inference_mode():
+        for start in range(0, len(texts), batch_size):
+            batch = [prefix + text for text in texts[start : start + batch_size]]
+            encoded = tokenizer(
+                batch,
+                padding=True,
+                truncation=True,
+                max_length=max_length,
+                return_tensors="pt",
+            )
+            outputs = model(**encoded)
+            pooled = _mean_pool_embeddings(outputs.last_hidden_state, encoded["attention_mask"])
+            vectors.append(F.normalize(pooled, p=2, dim=-1).cpu())
+    return torch.cat(vectors, dim=0)
+
+
+def build_retrieval_index(
+    *,
+    slices: list[dict[str, Any]],
+    output_dir: str | Path,
+    model_id: str = RETRIEVAL_MODEL_ID,
+) -> dict[str, Any]:
+    """Embed every chunk once and persist a routed-eval retrieval index under the run directory."""
+    if not slices:
+        raise ValueError("Cannot build a retrieval index without corpus slices.")
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    passage_texts: list[str] = []
+    passage_counts: list[int] = []
+    for item in slices:
+        passages = _content_passages(str(item["text"])) or [str(item["text"])]
+        passage_texts.extend(passages)
+        passage_counts.append(len(passages))
+    passage_embeddings = _embed_texts(
+        texts=passage_texts,
+        model_id=model_id,
+        is_query=False,
+    )
+    chunk_embeddings: list[torch.Tensor] = []
+    offset = 0
+    for passage_count in passage_counts:
+        chunk_vector = passage_embeddings[offset : offset + passage_count].mean(dim=0, keepdim=True)
+        chunk_embeddings.append(F.normalize(chunk_vector, p=2, dim=-1))
+        offset += passage_count
+    embeddings = torch.cat(chunk_embeddings, dim=0)
+    embeddings_path = output_dir / "chunk_embeddings.pt"
+    torch.save(embeddings, embeddings_path)
+
+    metadata = {
+        "embedding_model_id": model_id,
+        "num_slices": len(slices),
+        "slices": [
+            {
+                "chunk_id": item["chunk_id"],
+                "start_token": int(item["start_token"]),
+                "end_token": int(item["end_token"]),
+                "row_hash": item["row_hash"],
+                "num_passages": passage_counts[index],
+            }
+            for index, item in enumerate(slices)
+        ],
+        "embeddings_path": str(embeddings_path.resolve()),
+    }
+    write_json(output_dir / "index.json", metadata)
+    return metadata
+
+
+def _load_retrieval_index(retrieval_dir: str | Path) -> tuple[dict[str, Any], torch.Tensor]:
+    """Load retrieval metadata and chunk embeddings written by ``build_retrieval_index``."""
+    retrieval_dir = Path(retrieval_dir)
+    metadata = json.loads((retrieval_dir / "index.json").read_text(encoding="utf-8"))
+    embeddings = torch.load(retrieval_dir / "chunk_embeddings.pt", map_location="cpu", weights_only=False)
+    return metadata, embeddings
+
+
+def route_eval_questions(
+    *,
+    eval_rows: list[dict[str, Any]],
+    slices: list[dict[str, Any]],
+    retrieval_dir: str | Path,
+    model_id: str = RETRIEVAL_MODEL_ID,
+) -> list[dict[str, Any]]:
+    """Route each eval question to the most similar chunk and persist diagnostics."""
+    if not eval_rows:
+        raise ValueError("eval_rows must not be empty.")
+    if not slices:
+        raise ValueError("slices must not be empty.")
+
+    retrieval_dir = Path(retrieval_dir)
+    metadata, chunk_embeddings = _load_retrieval_index(retrieval_dir)
+    if len(metadata["slices"]) != len(slices):
+        raise ValueError("Retrieval metadata does not match the in-memory slice list.")
+
+    chunk_text_by_id = {str(item["chunk_id"]): str(item["text"]) for item in slices}
+    chunk_ids = [str(item["chunk_id"]) for item in metadata["slices"]]
+    query_embeddings = _embed_texts(
+        texts=[str(row["query"]) for row in eval_rows],
+        model_id=model_id,
+        is_query=True,
+    )
+    scores = torch.matmul(query_embeddings, chunk_embeddings.T)
+
+    routes: list[dict[str, Any]] = []
+    for row_index, row in enumerate(eval_rows):
+        best_index = int(torch.argmax(scores[row_index]).item())
+        retrieved_slice_id = chunk_ids[best_index]
+        retrieved_chunk_text = chunk_text_by_id[retrieved_slice_id].lower()
+        # ``retrieval_answer_present`` is a cheap diagnostic, not a scorer: it answers whether any
+        # accepted gold answer string literally appears in the retrieved chunk text. When false,
+        # a later QA miss is likely routing-related rather than cartridge-related.
+        answer_present = any(
+            str(answer).lower() in retrieved_chunk_text
+            for answer in row["answers"]
+        )
+        routes.append(
+            {
+                "prompt_id": f"{row['sample_id']}::{row['row_hash']}",
+                "question_id": row.get("question_id"),
+                "query": row["query"],
+                # Top-1 routed chunk chosen by cosine similarity between question and chunk
+                # embeddings. v1 intentionally does not do top-k fusion or reranking.
+                "retrieved_slice_id": retrieved_slice_id,
+                "retrieval_score": float(scores[row_index, best_index].item()),
+                "retrieval_answer_present": answer_present,
+            }
+        )
+
+    write_jsonl(retrieval_dir / "routes.jsonl", routes)
+    write_json(
+        retrieval_dir / "summary.json",
+        {
+            "embedding_model_id": model_id,
+            "num_questions": len(routes),
+            "retrieval_hit_rate": sum(int(route["retrieval_answer_present"]) for route in routes)
+            / len(routes),
+        },
+    )
+    return routes
 
 
 def _clean_assistant_text(text: str) -> str:
@@ -109,7 +286,11 @@ def _clean_assistant_text(text: str) -> str:
 
 
 def _assistant_target_token_ids(tokenizer, assistant_text: str) -> list[int]:
-    """Encode the supervised answer and append EOS so the cartridge learns when to stop."""
+    """Tokenize ``assistant_text`` and append EOS.
+
+    The returned list is stored as ``assistant_token_ids`` in training JSONL; each id has
+    a matching entry in ``assistant_supervision`` built from teacher logits at that step.
+    """
     assistant_token_ids = tokenizer.encode(assistant_text, add_special_tokens=False)
     eos_token_id = tokenizer.eos_token_id
     if eos_token_id is None:
@@ -128,7 +309,11 @@ def generate_bootstrap_questions(
     batch_size: int = 20,
     max_rounds: int = 40,
 ) -> list[dict[str, str]]:
-    """Use the teacher model to synthesize short factual Q/A pairs from the corpus."""
+    """Use the vLLM teacher to synthesize short factual Q/A pairs from the corpus.
+
+    Each returned item has ``question`` and ``expected_answer``; the latter is the ANSWER
+    half of a parsed ``QUESTION ||| ANSWER`` line (see ``_parse_question_answer_lines``).
+    """
     forbidden = {item["query"].strip().lower() for item in eval_spec}
     client = VLLMClient(base_url=base_url, api_key=api_key)
     generated: list[dict[str, str]] = []
@@ -218,7 +403,11 @@ def generate_teacher_answers(
     api_key: str,
     max_completion_tokens: int,
 ) -> list[dict[str, str]]:
-    """Materialize the exact teacher answers that later become cartridge supervision."""
+    """Build ``answer_records`` for ``build_training_dataset`` from bootstrap rows.
+
+    Each record's ``assistant_text`` (and ``expected_answer``) is the cleaned bootstrap
+    ``expected_answer``; ``user_message`` is the question plus ``BOOTSTRAP_ANSWER_PROMPT``.
+    """
     del corpus_text
     del base_url
     del api_key
@@ -254,7 +443,14 @@ def build_training_dataset(
     device: str,
     top_logprobs: int,
 ) -> list[dict[str, Any]]:
-    """Convert teacher answers into token-level top-k supervision for distillation."""
+    """Run the HF teacher on (system=context, user=answer_record) and write distillation JSONL.
+
+    For each ``answer_record``, ``assistant_text`` becomes the supervised completion; its
+    token ids and per-step top-k teacher logprobs are serialized as ``assistant_token_ids``
+    and ``assistant_supervision``. Rows also include ``system_prompt`` (full corpus context)
+    and ``messages`` for traceability; the trainer reads ``system_prompt``, first user
+    message, those two fields, plus ``slice_ids`` / ``record_id``.
+    """
     if not answer_records:
         raise ValueError("Cannot build a training dataset without teacher answer records.")
 
@@ -275,6 +471,8 @@ def build_training_dataset(
     )
     with torch.inference_mode():
         for answer_record in answer_records:
+            # ``assistant_text`` originates from bootstrap ``expected_answer`` via
+            # ``generate_teacher_answers``; same string is teacher-forced for logprob mining.
             user_message = answer_record["user_message"]
             assistant_text = _clean_assistant_text(answer_record["assistant_text"])
             messages = [
@@ -288,10 +486,16 @@ def build_training_dataset(
                 chat_template_kwargs={"enable_thinking": False},
             )
             prompt_ids = tokenizer.encode(prompt_text, add_special_tokens=False)
+            # The target includes EOS so the trainer learns not only which short answer to start
+            # with, but also where to stop generation.
             assistant_token_ids = _assistant_target_token_ids(tokenizer, assistant_text)
             if len(assistant_token_ids) <= 1:
                 continue
 
+            # Teacher forcing mirrors standard next-token training:
+            #   prompt + assistant[:-1] -> predict assistant[0:]
+            #
+            # That gives one teacher logit row per target token, including the final EOS token.
             input_ids = torch.tensor(
                 [prompt_ids + assistant_token_ids[:-1]],
                 device=device,
@@ -300,6 +504,8 @@ def build_training_dataset(
             logits = model(input_ids=input_ids).logits
             response_start = len(prompt_ids)
             response_end = response_start + len(assistant_token_ids) - 1
+            # ``response_logits[row_idx]`` predicts ``assistant_token_ids[row_idx]``. This is the
+            # exact alignment later reconstructed in ``_compute_example_loss`` during training.
             response_logits = logits[:, response_start - 1 : response_end, :]
             log_probs = torch.log_softmax(response_logits, dim=-1)
             target_ids = torch.tensor(
@@ -307,13 +513,23 @@ def build_training_dataset(
                 device=device,
                 dtype=torch.long,
             )
+            # Teacher log-prob assigned to the actual target token at each position.
             target_log_probs = log_probs.gather(-1, target_ids.unsqueeze(-1)).squeeze(0).squeeze(-1)
+            # ``top_logprobs`` is the sparse teacher distribution saved into the JSONL. Instead of
+            # storing the full vocabulary distribution for every token position, we keep only the
+            # top-k alternatives and their log-probabilities.
             top_values, top_indices = torch.topk(log_probs.squeeze(0), k=top_logprobs, dim=-1)
 
             supervision = []
             # Store only the sparse top-k distribution per position; that is enough for
             # the cartridge trainer while keeping the dataset compact and inspectable.
             for row_idx, token_id in enumerate(assistant_token_ids):
+                # Each supervision row is one decoding step. It contains:
+                # - the reference token actually taken at this step
+                # - the teacher log-prob for that token
+                # - ``top_logprobs``: the teacher's top-k candidate tokens at this step
+                #
+                # ``_sparse_distillation_loss`` consumes this structure directly.
                 supervision.append(
                         {
                             "token": tokenizer.decode([token_id], skip_special_tokens=False),
@@ -558,6 +774,9 @@ def write_budget_report(
     )
     paired_rows: list[dict[str, Any]] = []
     for baseline, cartridge in zip(baseline_rows, cartridge_rows, strict=True):
+        retrieved_slice_id = cartridge["metadata"].get("retrieved_slice_id")
+        retrieval_score = cartridge["metadata"].get("retrieval_score")
+        retrieval_answer_present = cartridge["metadata"].get("retrieval_answer_present")
         row = {
             "prompt_id": baseline["prompt_id"],
             "question": baseline["metadata"]["question_id"],
@@ -567,6 +786,9 @@ def write_budget_report(
             "baseline_prediction": baseline["prediction"],
             "cartridge_prediction": cartridge["prediction"],
             "gold": baseline["gold"],
+            "retrieved_slice_id": retrieved_slice_id,
+            "retrieval_score": retrieval_score,
+            "retrieval_answer_present": retrieval_answer_present,
             "baseline_prefill_ms": baseline.get("prefill_ms"),
             "cartridge_prefill_ms": cartridge.get("prefill_ms"),
             "baseline_total_latency_ms": baseline.get("total_latency_ms"),
@@ -684,6 +906,13 @@ def write_budget_report(
         summary["cartridge_semantic_match_rate"] = (
             sum(int(bool(row["cartridge_semantic_match"])) for row in paired_rows) / len(paired_rows)
         )
+    retrieval_hits = [
+        bool(row["retrieval_answer_present"])
+        for row in paired_rows
+        if row["retrieval_answer_present"] is not None
+    ]
+    if retrieval_hits:
+        summary["retrieval_hit_rate"] = sum(int(item) for item in retrieval_hits) / len(retrieval_hits)
     summary["cartridge_amortized_session_total_ms"] = (
         summary["cartridge_query_session_total_ms"] + (build_seconds * 1000.0)
     )
@@ -725,6 +954,11 @@ def write_budget_report(
             f"- Cartridge semantic-match rate: {summary['cartridge_semantic_match_rate']:.3f}"
             if semantic_judge
             else "- Cartridge semantic-match rate: n/a"
+        ),
+        (
+            f"- Retrieval hit rate: {summary['retrieval_hit_rate']:.3f}"
+            if "retrieval_hit_rate" in summary
+            else "- Retrieval hit rate: n/a"
         ),
         f"- Average compression ratio: {summary['avg_compression_ratio']:.3f}x",
         (
@@ -772,10 +1006,10 @@ def write_budget_report(
         ),
         "",
         (
-            "| question | baseline_em | cartridge_em | baseline_sem | cartridge_sem | "
-            "compression_ratio | decode_ratio | prefill_speedup | e2e_speedup |"
+            "| question | slice | route_hit | baseline_em | cartridge_em | baseline_sem | "
+            "cartridge_sem | compression_ratio | decode_ratio | prefill_speedup | e2e_speedup |"
         ),
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for row in paired_rows:
         throughput = row["throughput_ratio"]
@@ -783,8 +1017,11 @@ def write_budget_report(
         e2e = row["end_to_end_speedup_ratio"]
         baseline_sem = row.get("baseline_semantic_match")
         cartridge_sem = row.get("cartridge_semantic_match")
+        route_hit = row.get("retrieval_answer_present")
         lines.append(
-            f"| {row['question']} | {int(row['baseline_exact_match'])} | "
+            f"| {row['question']} | {row.get('retrieved_slice_id', 'n/a')} | "
+            f"{'n/a' if route_hit is None else int(bool(route_hit))} | "
+            f"{int(row['baseline_exact_match'])} | "
             f"{int(row['cartridge_exact_match'])} | "
             f"{'n/a' if baseline_sem is None else int(bool(baseline_sem))} | "
             f"{'n/a' if cartridge_sem is None else int(bool(cartridge_sem))} | "
@@ -792,7 +1029,9 @@ def write_budget_report(
             f"{throughput:.3f} | {prefill:.3f} | {e2e:.3f} |"
             if throughput is not None and prefill is not None and e2e is not None
             else
-            f"| {row['question']} | {int(row['baseline_exact_match'])} | "
+            f"| {row['question']} | {row.get('retrieved_slice_id', 'n/a')} | "
+            f"{'n/a' if route_hit is None else int(bool(route_hit))} | "
+            f"{int(row['baseline_exact_match'])} | "
             f"{int(row['cartridge_exact_match'])} | "
             f"{'n/a' if baseline_sem is None else int(bool(baseline_sem))} | "
             f"{'n/a' if cartridge_sem is None else int(bool(cartridge_sem))} | "
@@ -835,19 +1074,21 @@ def write_run_report(
         "",
         (
             "| budget | baseline_em | cartridge_em | baseline_sem | cartridge_sem | "
-            "compression | decode_ratio | prefill_speedup | e2e_speedup | build_time_s | "
-            "baseline_followup_ms | cartridge_followup_ms |"
+            "retrieval_hit | compression | decode_ratio | prefill_speedup | e2e_speedup | "
+            "build_time_s | baseline_followup_ms | cartridge_followup_ms |"
         ),
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for item in budget_summaries:
         baseline_semantic = item.get("baseline_semantic_match_rate")
         cartridge_semantic = item.get("cartridge_semantic_match_rate")
+        retrieval_hit = item.get("retrieval_hit_rate")
         lines.append(
             f"| {item['budget_label']} | {item['baseline_exact_match_rate']:.3f} | "
             f"{item['cartridge_exact_match_rate']:.3f} | "
             f"{'n/a' if baseline_semantic is None else f'{baseline_semantic:.3f}'} | "
             f"{'n/a' if cartridge_semantic is None else f'{cartridge_semantic:.3f}'} | "
+            f"{'n/a' if retrieval_hit is None else f'{retrieval_hit:.3f}'} | "
             f"{item['avg_compression_ratio']:.3f}x | {item['avg_throughput_ratio']:.3f}x | "
             f"{item['avg_prefill_speedup_ratio']:.3f}x | "
             f"{item['avg_end_to_end_speedup_ratio']:.3f}x | "

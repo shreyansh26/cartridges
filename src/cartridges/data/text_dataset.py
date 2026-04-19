@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Load and materialize the repo's standardized ``data/<experiment>/`` layout."""
 
 import json
@@ -71,9 +69,15 @@ def build_text_manifest(
     token_ids = tokenizer.encode(text, add_special_tokens=False)
 
     chunks: list[dict[str, Any]] = []
-    # The benchmark currently expects a single chunk, but the manifest keeps chunk metadata explicit
-    # so the layout can grow into routed multi-cartridge experiments later.
-    for start in range(0, max(len(token_ids) - chunk_tokens + 1, 1), stride_tokens):
+    if len(token_ids) <= chunk_tokens:
+        start_offsets = [0]
+    else:
+        final_start = len(token_ids) - chunk_tokens
+        start_offsets = list(range(0, final_start + 1, stride_tokens))
+        if start_offsets[-1] != final_start:
+            start_offsets.append(final_start)
+
+    for start in start_offsets:
         window = token_ids[start : start + chunk_tokens]
         if not window:
             break
@@ -85,8 +89,6 @@ def build_text_manifest(
         }
         record["row_hash"] = stable_hash(record)
         chunks.append(record)
-        if start + chunk_tokens >= len(token_ids):
-            break
 
     manifest = {
         "corpus_id": corpus_id or source_path.parent.name,
@@ -101,16 +103,22 @@ def build_text_manifest(
     return manifest
 
 
-def load_single_chunk_text(manifest_path: str | Path) -> tuple[str, str]:
-    """Read back the sole chunk used by the current single-cartridge benchmark."""
+def load_corpus_slices(manifest_path: str | Path) -> list[dict[str, Any]]:
+    """Load all chunk records from a corpus manifest in a stable order."""
     payload = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
     chunks = payload["chunks"]
-    if len(chunks) != 1:
-        raise ValueError(
-            "This benchmark currently supports exactly one text chunk. "
-            f"Found {len(chunks)} chunks in {manifest_path}."
-        )
-    return chunks[0]["chunk_id"], chunks[0]["text"]
+    if not chunks:
+        raise ValueError(f"No chunks found in {manifest_path}.")
+    return [
+        {
+            "chunk_id": chunk["chunk_id"],
+            "start_token": int(chunk["start_token"]),
+            "end_token": int(chunk["end_token"]),
+            "text": chunk["text"],
+            "row_hash": chunk["row_hash"],
+        }
+        for chunk in chunks
+    ]
 
 
 def build_eval_rows_from_spec(

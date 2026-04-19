@@ -1,0 +1,11 @@
+{
+  "title": "History of the United States",
+  "source_url": "https://en.wikipedia.org/wiki/History_of_the_United_States",
+  "api_url": "https://en.wikipedia.org/w/api.php?action=query&prop=extracts%7Crevisions&titles=History+of+the+United+States&explaintext=1&rvprop=ids%7Ctimestamp&format=json&formatversion=2&redirects=1",
+  "page_id": 63876,
+  "revision_id": 1347817331,
+  "revision_timestamp": "2026-04-09T00:26:15Z",
+  "retrieved_by": "Wikipedia extracts API (plain text)",
+  "tokenizer_model_id": "Qwen/Qwen3-4B",
+  "token_count": 24147
+}

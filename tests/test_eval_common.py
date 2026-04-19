@@ -1,6 +1,6 @@
-from __future__ import annotations
+from pathlib import Path
 
-from cartridges.eval.cartridge import _clean_completion
+from cartridges.eval.cartridge import _clean_completion, _route_for_rows
 from cartridges.eval.common import build_cartridge_messages, build_messages
 
 
@@ -32,3 +32,16 @@ def test_build_cartridge_messages_uses_user_only_prompt() -> None:
 
 def test_clean_completion_strips_assistant_prefixes() -> None:
     assert _clean_completion("Assistant: Assistant: The Arabian Sea.") == "The Arabian Sea."
+
+
+def test_route_for_rows_supports_single_cartridge_without_retrieval_routes() -> None:
+    rows = [{"sample_id": "demo", "row_hash": "row-1"}]
+    cartridge_paths, routes = _route_for_rows(
+        rows=rows,
+        cartridge_path=Path("/tmp/cartridge.pt"),
+        cartridge_paths=None,
+        retrieval_routes=None,
+    )
+
+    assert cartridge_paths == {"default": Path("/tmp/cartridge.pt")}
+    assert routes["demo::row-1"]["retrieved_slice_id"] == "default"

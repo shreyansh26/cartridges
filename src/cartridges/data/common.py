@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Small serialization helpers shared across data preparation and reporting."""
 
 import hashlib

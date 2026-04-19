@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Distill teacher responses into a trainable KV cartridge."""
 
 import json
@@ -22,7 +20,21 @@ from cartridges.data.common import stable_hash, write_json
 
 @dataclass(frozen=True)
 class TrainingExample:
-    """One teacher-supervised training row targeting a single cartridge slice."""
+    """One distillation row: chat prompt + target completion + sparse teacher distributions.
+
+    Loaded from JSONL written by ``build_training_dataset`` (``text_benchmark``). Fields
+    mirror that schema:
+
+    - ``system_prompt`` / ``user_message``: first message roles in the stored row;
+      training seeds the cartridge from ``system_prompt`` and builds the student prompt
+      from ``user_message`` only (see ``_training_prompt``), matching routed inference.
+    - ``assistant_token_ids``: target completion as tokenizer ids for the assistant
+      answer text plus a final EOS (see ``_assistant_target_token_ids`` in
+      ``text_benchmark``). Length equals ``len(assistant_supervision)``.
+    - ``assistant_supervision``: one dict per target token with ``token_id``, teacher
+      ``logprob``, and ``top_logprobs`` (sparse top-k over the HF teacher); produced in
+      ``build_training_dataset`` and consumed by ``_sparse_distillation_loss``.
+    """
     record_id: str
     slice_id: str
     system_prompt: str
@@ -43,13 +55,15 @@ def _set_training_seed(seed: int) -> None:
 
 
 def load_training_examples(path: str | Path) -> list[TrainingExample]:
-    """Load the JSONL training dataset emitted by ``build_training_dataset``."""
+    """Load JSONL lines from ``build_training_dataset`` into ``TrainingExample`` records."""
     rows: list[TrainingExample] = []
     with Path(path).open("r", encoding="utf-8") as handle:
         for line in handle:
             if not line.strip():
                 continue
             row = json.loads(line)
+            # JSONL keys align with rows appended in ``build_training_dataset``:
+            # ``messages[0]`` is the user turn; assistant text is redundant with token ids.
             rows.append(
                 TrainingExample(
                     record_id=row["record_id"],
@@ -80,27 +94,60 @@ def _sparse_distillation_loss(
     logits: torch.Tensor,
     supervision: list[dict[str, Any]],
 ) -> torch.Tensor:
-    """Approximate KL distillation with a sparse teacher distribution per output token."""
+    """Cross-entropy against the sparse teacher distribution stored in ``assistant_supervision``.
+
+    ``supervision`` comes from ``build_training_dataset``. For each assistant token position it
+    stores:
+
+    - ``token_id`` / ``logprob``: the teacher probability assigned to the actual target token
+      that appeared in the reference answer.
+    - ``top_logprobs``: a top-k sparse snapshot of the teacher distribution at that same step.
+      Each entry is a likely alternative token with its own ``token_id`` and ``logprob``.
+
+    The loss treats those sparse probabilities as a normalized teacher distribution and computes
+    cross-entropy against the student's logits for that token position.
+    """
+    # Convert student logits into log-probabilities once up front. We keep the result in log
+    # space because the final loss is a weighted negative log-likelihood.
     log_probs = torch.log_softmax(logits.float(), dim=-1)
     token_losses: list[torch.Tensor] = []
     for row_idx, token_supervision in enumerate(supervision):
+        # ``candidate_ids`` are the vocabulary ids that define the sparse teacher distribution for
+        # this output step. ``candidate_weights`` are the corresponding probabilities in normal
+        # probability space, reconstructed from stored logprobs.
         candidate_ids: list[int] = []
         candidate_weights: list[float] = []
+        # ``top_logprobs`` is the teacher's top-k token list for this single decoding step.
+        # It is sparse: only the most likely alternatives are stored, not the full vocabulary.
         for candidate in token_supervision["top_logprobs"]:
             token_id = candidate.get("token_id")
             if token_id is None:
                 continue
             candidate_ids.append(int(token_id))
+            # The JSONL stores log-probabilities because they are stable and compact. Convert back
+            # to probabilities here so we can normalize the sparse teacher mass.
             candidate_weights.append(math.exp(float(candidate["logprob"])))
+        # ``token_id`` is the actual reference token for this step. In principle it should already
+        # appear in ``top_logprobs``. If the teacher assigned it low enough probability that it
+        # fell out of the top-k, we add it back explicitly so the gold token is never unsupervised.
         target_token_id = int(token_supervision["token_id"])
         if target_token_id not in candidate_ids:
             candidate_ids.append(target_token_id)
             candidate_weights.append(math.exp(float(token_supervision["logprob"])))
+        # Re-normalize because ``top_logprobs`` covers only a truncated slice of the full teacher
+        # distribution. This turns the kept candidates into a proper categorical distribution.
         weights = torch.tensor(candidate_weights, device=logits.device, dtype=torch.float32)
         weights = weights / weights.sum()
+        # Gather the student's log-probabilities only at the sparse candidate ids instead of over
+        # the full vocabulary. The weighted sum below is:
+        #
+        #   -Σ_i teacher_prob_i * log student_prob_i
+        #
+        # which is the cross-entropy from the sparse teacher distribution to the student.
         token_losses.append(
             -(weights * log_probs[row_idx, torch.tensor(candidate_ids, device=logits.device)]).sum()
         )
+    # Average over assistant token positions so every training example contributes one scalar loss.
     return torch.stack(token_losses).mean()
 
 
@@ -112,8 +159,16 @@ def _compute_example_loss(
     example: TrainingExample,
     device: str,
 ) -> torch.Tensor:
-    """Compute the distillation loss for one prompt/answer pair."""
+    """Compute the sparse distillation loss for one prompt/answer pair.
+
+    The example already contains the teacher-aligned assistant target tokens and per-token sparse
+    supervision. This function's job is just to reproduce the same token positions on the student
+    side so ``_sparse_distillation_loss`` compares like with like.
+    """
     prompt_ids = _training_prompt(tokenizer, example.user_message).to(device)
+    # Teacher-forcing: append all target tokens except the last so each logits position
+    # predicts the next ``assistant_token_ids`` entry (same alignment as in
+    # ``build_training_dataset`` when slicing ``response_logits``).
     if len(example.assistant_token_ids) > 1:
         assistant_prefix = torch.tensor(
             [example.assistant_token_ids[:-1]],
@@ -130,6 +185,9 @@ def _compute_example_loss(
         use_cache=False,
     )
     target_len = len(example.assistant_token_ids)
+    # The logit at position ``prompt_len - 1`` predicts the first assistant token; after that the
+    # teacher-forced assistant prefix makes each subsequent row predict the next target token.
+    # The slice below therefore aligns 1:1 with ``assistant_supervision`` / ``assistant_token_ids``.
     start_idx = prompt_ids.shape[-1] - 1
     end_idx = start_idx + target_len
     assistant_logits = outputs.logits[0, start_idx:end_idx, :]

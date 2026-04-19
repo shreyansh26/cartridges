@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Thin wrapper over the vLLM OpenAI-compatible API plus tokenizer parity checks."""
 
 import os

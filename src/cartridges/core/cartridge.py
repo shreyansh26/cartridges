@@ -1,6 +1,11 @@
-from __future__ import annotations
+"""Core trainable KV-cache object used as the cartridge representation.
 
-"""Core trainable KV-cache object used as the cartridge representation."""
+A cartridge is a fixed-length prefix KV cache passed as ``past_key_values`` so later
+tokens attend to a compact memory instead of the full document. Training (see
+``cartridges.train.cartridge``) initializes it from the first ``num_tokens`` of the
+chunk ``system_prompt`` via ``initialize_from_prefix_text``, then optimizes the
+trainable tail while the frozen prefix keeps attention-sink behavior stable.
+"""
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,7 +44,12 @@ def _normalize_past_key_values(past_key_values) -> list[tuple[torch.Tensor, torc
 
 
 class TrainableKVCartridge(nn.Module):
-    """A compact, trainable KV cache with optional frozen sink tokens at the front."""
+    """Per-layer K/V tensors for one compressed prefix, split into frozen sink + trainable body.
+
+    ``num_tokens`` is the sequence length represented by this cache (one position per
+    prefix token used when the cache was created or last aligned). ``as_cache`` wraps
+    these tensors for HuggingFace ``past_key_values`` during forward passes.
+    """
 
     def __init__(
         self,
@@ -156,7 +166,12 @@ def initialize_from_prefix_text(
     num_tokens: int,
     num_frozen_tokens: int = 1,
 ) -> TrainableKVCartridge:
-    """Initialize a cartridge from the first ``num_tokens`` of raw corpus text."""
+    """Run a one-shot prefix forward on ``text`` and capture KV as the starting cartridge.
+
+    In the benchmark trainer, ``text`` is typically ``TrainingExample.system_prompt``
+    (context + instructions), not the user question; distillation then teaches the
+    cartridge to help answer when that same system prompt is paired with user messages.
+    """
     encoded = tokenizer(text, return_tensors="pt", add_special_tokens=False)
     input_ids = encoded["input_ids"][..., :num_tokens].to(model.device)
     outputs = model(input_ids=input_ids, use_cache=True)

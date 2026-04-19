@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Shared prompt building and scoring helpers for baseline and cartridge evaluation."""
 
 import json

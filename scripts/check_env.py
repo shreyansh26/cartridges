@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Validate local environment prerequisites for smoke and full benchmark runs."""
 
-from __future__ import annotations
-
 import argparse
 import csv
 import json

@@ -23,6 +23,16 @@ outputs/wikipedia_india/runs/india_512_stable/*
 outputs/wikipedia_india/runs/india_512_stable/report/*
 !outputs/wikipedia_india/runs/india_512_stable/report/comparison.md
 !outputs/wikipedia_india/runs/india_512_stable/report/summary.json
+!outputs/wikipedia_history_us/
+outputs/wikipedia_history_us/*
+!outputs/wikipedia_history_us/runs/
+outputs/wikipedia_history_us/runs/*
+!outputs/wikipedia_history_us/runs/history_us_512_1024_stable/
+outputs/wikipedia_history_us/runs/history_us_512_1024_stable/*
+!outputs/wikipedia_history_us/runs/history_us_512_1024_stable/report/
+outputs/wikipedia_history_us/runs/history_us_512_1024_stable/report/*
+!outputs/wikipedia_history_us/runs/history_us_512_1024_stable/report/comparison.md
+!outputs/wikipedia_history_us/runs/history_us_512_1024_stable/report/summary.json
 wandb/
 *.pt
 *.jsonl

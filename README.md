@@ -10,9 +10,18 @@ The public entrypoints are:
 
 The standardized dataset layout is:
 
-- [data.txt](/mnt/ssd1/shreyansh/home_dir/cartridges/data/wikipedia_india/data.txt)
-- [eval_spec.json](/mnt/ssd1/shreyansh/home_dir/cartridges/data/wikipedia_india/eval_spec.json)
-- [metadata.json](/mnt/ssd1/shreyansh/home_dir/cartridges/data/wikipedia_india/metadata.json)
+- `data/{experiment}/data.txt`
+- `data/{experiment}/eval_spec.json`
+- optional `data/{experiment}/metadata.json`
+
+Tracked example datasets in this repo:
+
+- [wikipedia_india/data.txt](/mnt/ssd1/shreyansh/home_dir/cartridges/data/wikipedia_india/data.txt)
+- [wikipedia_india/eval_spec.json](/mnt/ssd1/shreyansh/home_dir/cartridges/data/wikipedia_india/eval_spec.json)
+- [wikipedia_india/metadata.json](/mnt/ssd1/shreyansh/home_dir/cartridges/data/wikipedia_india/metadata.json)
+- [wikipedia_history_us/data.txt](/mnt/ssd1/shreyansh/home_dir/cartridges/data/wikipedia_history_us/data.txt)
+- [wikipedia_history_us/eval_spec.json](/mnt/ssd1/shreyansh/home_dir/cartridges/data/wikipedia_history_us/eval_spec.json)
+- [wikipedia_history_us/metadata.json](/mnt/ssd1/shreyansh/home_dir/cartridges/data/wikipedia_history_us/metadata.json)
 
 ## Quickstart
 
@@ -24,6 +33,21 @@ CUDA_VISIBLE_DEVICES=3 python scripts/run_benchmark.py wikipedia_india
 ```
 
 Explicit stable runs used in this repo:
+
+```bash
+source .venv/bin/activate
+CUDA_VISIBLE_DEVICES=1 python scripts/run_benchmark.py wikipedia_history_us \
+  --gpu 1 \
+  --device cuda:0 \
+  --run-name history_us_512_1024_stable \
+  --cartridge-tokens 512 1024 \
+  --train-steps 240 \
+  --bootstrap-count 120 \
+  --max-completion-tokens 48 \
+  --chunk-tokens 8192 \
+  --max-context-tokens 32768 \
+  --semantic-judge
+```
 
 ```bash
 source .venv/bin/activate
@@ -85,7 +109,12 @@ The reported compression ratio is therefore:
 compression_ratio = kv_bytes(full_context_prompt) / kv_bytes(cartridge)
 ```
 
-For a single-chunk corpus, this is approximately `L / p`, adjusted for prompt framing tokens.
+For a routed multi-chunk corpus, the reported ratio is still:
+
+- numerator: the KV bytes for the full-page baseline prompt
+- denominator: the KV bytes for the one routed cartridge used to answer that question
+
+So the ratio is still approximately `L / p`, adjusted for prompt framing tokens, but now `L` can be the full document while the cartridge is trained on only the routed chunk.
 
 ### Training Objective
 
@@ -138,50 +167,55 @@ The core cartridge object is [cartridge.py](/mnt/ssd1/shreyansh/home_dir/cartrid
 
 ```mermaid
 flowchart TD
-    A[data/<experiment>/data.txt + eval_spec.json]
+    A[data/{experiment}/data.txt + eval_spec.json]
     B[build_text_manifest + build_eval_rows_from_spec]
-    C[start managed vLLM server]
-    D[generate_bootstrap_questions]
-    E[generate_teacher_answers]
-    F[build_training_dataset]
+    C[build_retrieval_index + route_eval_questions]
+    D[start managed vLLM server]
+    E[generate_bootstrap_questions per chunk]
+    F[generate_teacher_answers per chunk]
     G[stop vLLM server]
-    H[run_local_hf_matched_eval]
-    I[train_cartridge per budget]
-    J[run_cartridge_eval per budget]
-    K[write_budget_report]
-    L[write_run_report + run_manifest]
+    H[build_training_dataset per chunk]
+    I[run_local_hf_matched_eval on full context]
+    J[train_cartridge per chunk and budget]
+    K[run routed run_cartridge_eval per budget]
+    L[write_budget_report]
+    M[write_run_report + run_manifest]
 
     A --> B
     B --> C
-    C --> D --> E --> F
-    F --> G
-    G --> H
-    F --> I
-    I --> J
-    H --> K
+    C --> D
+    D --> E --> F
+    F --> G --> H
+    B --> I
+    C --> K
+    H --> J
+    I --> L
     J --> K
     K --> L
+    L --> M
 ```
 
 ## What `run_benchmark.py` Actually Does
 
 When you run [run_benchmark.py](/mnt/ssd1/shreyansh/home_dir/cartridges/scripts/run_benchmark.py), the control flow is:
 
-1. It resolves `data/<experiment>/` with [load_experiment_inputs(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/data/text_dataset.py).
+1. It resolves `data/{experiment}/` with [load_experiment_inputs(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/data/text_dataset.py).
 2. It copies the input files into the run directory so the run stays self-contained.
 3. It tokenizes `data.txt` into a manifest with [build_text_manifest(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/data/text_dataset.py).
-4. It expands `eval_spec.json` into JSONL eval rows with [build_eval_rows_from_spec(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/data/text_dataset.py).
-5. If `--base-url` is not provided, it launches [serve_vllm.py](/mnt/ssd1/shreyansh/home_dir/cartridges/scripts/serve_vllm.py) and waits for readiness.
-6. It generates bootstrap question-answer candidates from the corpus with [generate_bootstrap_questions(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/benchmarks/text_benchmark.py).
-7. It materializes exact teacher answers with [generate_teacher_answers(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/benchmarks/text_benchmark.py).
-8. It converts those answers into sparse token-level supervision with [build_training_dataset(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/benchmarks/text_benchmark.py).
-9. It shuts down the managed vLLM server so local HF training and evaluation can reuse the GPU cleanly.
-10. It runs the full-context local baseline with [run_local_hf_matched_eval(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/eval/baseline.py).
-11. For each requested cartridge budget, it trains a cartridge with [train_cartridge(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/train/cartridge.py).
-12. It evaluates that cartridge with [run_cartridge_eval(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/eval/cartridge.py).
-13. It merges baseline and cartridge outputs into a per-budget report with [write_budget_report(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/benchmarks/text_benchmark.py).
-14. It writes the aggregate multi-budget report with [write_run_report(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/benchmarks/text_benchmark.py).
-15. It writes `run_manifest.json` and updates `outputs/<experiment>/latest`.
+4. It loads all chunk records with [load_corpus_slices(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/data/text_dataset.py).
+5. It expands `eval_spec.json` into JSONL eval rows with [build_eval_rows_from_spec(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/data/text_dataset.py).
+6. It embeds every chunk with [build_retrieval_index(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/benchmarks/text_benchmark.py) and routes held-out questions with [route_eval_questions(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/benchmarks/text_benchmark.py).
+7. If `--base-url` is not provided, it launches [serve_vllm.py](/mnt/ssd1/shreyansh/home_dir/cartridges/scripts/serve_vllm.py) and waits for readiness.
+8. For each chunk, it generates bootstrap question-answer candidates with [generate_bootstrap_questions(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/benchmarks/text_benchmark.py).
+9. For each chunk, it materializes exact teacher answers with [generate_teacher_answers(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/benchmarks/text_benchmark.py).
+10. It shuts down the managed vLLM server and clears lingering vLLM GPU workers before starting any local HF work.
+11. For each chunk, it converts teacher answers into sparse token-level supervision with [build_training_dataset(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/benchmarks/text_benchmark.py).
+12. It runs the full-context local baseline with [run_local_hf_matched_eval(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/eval/baseline.py).
+13. For each requested cartridge budget and each chunk, it trains one cartridge with [train_cartridge(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/train/cartridge.py).
+14. It evaluates each budget with routed [run_cartridge_eval(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/eval/cartridge.py), which injects the cartridge selected by retrieval for that question.
+15. It merges baseline and routed-cartridge outputs into a per-budget report with [write_budget_report(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/benchmarks/text_benchmark.py).
+16. It writes the aggregate multi-budget report with [write_run_report(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/benchmarks/text_benchmark.py).
+17. It writes `run_manifest.json` and updates `outputs/{experiment}/latest`.
 
 ## Which File Implements What
 
@@ -189,67 +223,40 @@ The active benchmark path lives in these tracked files:
 
 - [run_benchmark.py](/mnt/ssd1/shreyansh/home_dir/cartridges/scripts/run_benchmark.py): top-level orchestration, vLLM lifecycle, run directory management
 - [serve_vllm.py](/mnt/ssd1/shreyansh/home_dir/cartridges/scripts/serve_vllm.py): thin wrapper around `vllm serve`
-- [text_dataset.py](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/data/text_dataset.py): input loading, manifest construction, eval row materialization
+- [text_dataset.py](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/data/text_dataset.py): input loading, multi-slice manifest construction, eval row materialization
 - [common.py](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/data/common.py): stable hashing and JSON/JSONL writing
-- [text_benchmark.py](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/benchmarks/text_benchmark.py): bootstrap generation, teacher answers, supervision dataset building, semantic judge, report writing
+- [text_benchmark.py](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/benchmarks/text_benchmark.py): retrieval indexing, bootstrap generation, teacher answers, supervision dataset building, semantic judge, report writing
 - [vllm_openai.py](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/clients/vllm_openai.py): OpenAI-compatible vLLM client, tokenizer parity checks, optional teacher logprob fallback
 - [cartridge.py](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/core/cartridge.py): trainable KV cartridge object and prefix initialization
 - [cartridge.py](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/train/cartridge.py): distillation training loop and checkpoint selection
 - [common.py](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/eval/common.py): prompt building, exact-match scoring, canonical KV byte accounting
 - [baseline.py](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/eval/baseline.py): full-context baseline evaluation
-- [cartridge.py](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/eval/cartridge.py): cartridge-backed inference evaluation
+- [cartridge.py](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/eval/cartridge.py): routed cartridge-backed inference evaluation
 - [config.py](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/config.py): model and environment defaults
 
 ## Current Limits
 
-- The benchmark currently assumes the corpus fits into exactly one chunk.
+- Routing is top-1 only: one question selects one chunk and one cartridge.
+- The benchmark does not yet fuse evidence from multiple routed chunks or rerank a retrieved top-k set.
+- The exact-match metric is intentionally strict. For long-answer datasets like the history page, the semantic judge is the more useful quality number when the model adds harmless wrappers like articles or punctuation.
 
-## Handling Larger Corpora
+## Benchmark Reports
 
-If the corpus does not fit into one chunk, the clean extension is not "make one giant cartridge anyway". The right next step is to turn the current single-cartridge pipeline into a routed multi-cartridge system.
+The repo has the aggregate run reports for the following experiments:
 
-```mermaid
-flowchart TD
-    A[Long corpus]
-    B[Chunk into windows]
-    C[Train one cartridge per chunk]
-    D[Build chunk retrieval index]
-    E[Question]
-    F[Retrieve top chunk or top-k chunks]
-    G[Route to one cartridge]
-    H[Run cartridge inference]
-    I[Answer]
+### `wikipedia_history_us`
 
-    A --> B --> C
-    B --> D
-    E --> F
-    D --> F
-    F --> G --> H --> I
-    C --> G
-```
+- Aggregate report: [comparison.md](/mnt/ssd1/shreyansh/home_dir/cartridges/outputs/wikipedia_history_us/runs/history_us_512_1024_stable/report/comparison.md)
+- Aggregate summary: [summary.json](/mnt/ssd1/shreyansh/home_dir/cartridges/outputs/wikipedia_history_us/runs/history_us_512_1024_stable/report/summary.json)
 
-The implementation path would be:
+Observed numbers from the same run:
 
-1. Let [build_text_manifest(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/data/text_dataset.py) emit multiple chunks instead of forcing a single one.
-2. Replace [load_single_chunk_text(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/data/text_dataset.py) with a loader that returns all chunk records.
-3. Run bootstrap generation, teacher answering, supervision building, and [train_cartridge(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/train/cartridge.py) independently for each chunk.
-4. Save one cartridge artifact per `(chunk_id, budget)`.
-5. Build a lightweight retrieval index over the raw chunk texts.
-6. At question time, retrieve the best chunk and load only that chunk's cartridge for inference.
+- `cartridge_512`: exact match `0.10`, semantic match `0.85`, retrieval hit `1.00`, compression `47.31x`, prefill speedup `34.50x`, end-to-end speedup `5.30x`, follow-up latency `344.31 ms`, one-time build time `401.31 s`
+- `cartridge_1024`: exact match `0.10`, semantic match `1.00`, retrieval hit `1.00`, compression `23.66x`, prefill speedup `37.79x`, end-to-end speedup `6.00x`, follow-up latency `209.97 ms`, one-time build time `401.03 s`
 
-The clean first version is top-1 routing: one question selects one chunk, then one cartridge answers it. That matches the current repo design because [run_cartridge_eval(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/eval/cartridge.py) assumes a single injected cache at inference time.
+The `1024` budget is the better balanced result on this page: it keeps semantic quality at parity with the full-context baseline while still cutting follow-up latency by about `6x`.
 
-If a task genuinely needs evidence from multiple chunks, then the next layer is a router plus a fusion strategy. The simplest safe version is:
-
-- retrieve top-k chunks
-- rerank them for the question
-- either choose the best single chunk, or fall back to a short raw-context baseline over only those top-k chunks
-
-That is the real architectural limitation in the current repo: there is no retrieval-and-routing layer yet. Everything else in the benchmark is already compatible with a per-chunk cartridge workflow.
-
-## Checked-In Benchmark Reports
-
-The repo currently checks in only the aggregate report files for the two stable India runs.
+### `wikipedia_india`
 
 ### `cartridge_1024`
 
@@ -297,4 +304,4 @@ This benchmark also produces many local artifacts (not in the repo):
 - full run manifests
 - vLLM logs
 
-Those are written under `outputs/<experiment>/runs/<run_id>/`.
+Those are written under `outputs/{experiment}/runs/{run_id}/`.
