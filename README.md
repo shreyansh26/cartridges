@@ -29,15 +29,15 @@ Default run:
 
 ```bash
 source .venv/bin/activate
-CUDA_VISIBLE_DEVICES=3 python scripts/run_benchmark.py wikipedia_india
+CUDA_VISIBLE_DEVICES=0 python scripts/run_benchmark.py wikipedia_india
 ```
 
 Explicit stable runs used in this repo:
 
 ```bash
 source .venv/bin/activate
-CUDA_VISIBLE_DEVICES=1 python scripts/run_benchmark.py wikipedia_history_us \
-  --gpu 1 \
+CUDA_VISIBLE_DEVICES=0 python scripts/run_benchmark.py wikipedia_history_us \
+  --gpu 0 \
   --device cuda:0 \
   --run-name history_us_512_1024_stable \
   --cartridge-tokens 512 1024 \
@@ -51,8 +51,8 @@ CUDA_VISIBLE_DEVICES=1 python scripts/run_benchmark.py wikipedia_history_us \
 
 ```bash
 source .venv/bin/activate
-CUDA_VISIBLE_DEVICES=3 python scripts/run_benchmark.py wikipedia_india \
-  --gpu 3 \
+CUDA_VISIBLE_DEVICES=0 python scripts/run_benchmark.py wikipedia_india \
+  --gpu 0 \
   --device cuda:0 \
   --run-name india_1024_stable \
   --cartridge-tokens 1024 \
@@ -65,8 +65,8 @@ CUDA_VISIBLE_DEVICES=3 python scripts/run_benchmark.py wikipedia_india \
 
 ```bash
 source .venv/bin/activate
-CUDA_VISIBLE_DEVICES=3 python scripts/run_benchmark.py wikipedia_india \
-  --gpu 3 \
+CUDA_VISIBLE_DEVICES=0 python scripts/run_benchmark.py wikipedia_india \
+  --gpu 0 \
   --device cuda:0 \
   --run-name india_512_stable \
   --cartridge-tokens 512 \
