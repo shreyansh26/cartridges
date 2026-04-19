@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Core trainable KV-cache object used as the cartridge representation."""
+
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -11,6 +13,7 @@ from transformers.cache_utils import DynamicCache
 
 @dataclass(frozen=True)
 class AttentionShape:
+    """Minimal attention metadata needed to size canonical KV-cache tensors."""
     num_hidden_layers: int
     num_key_value_heads: int
     head_dim: int
@@ -18,6 +21,7 @@ class AttentionShape:
 
 
 def _infer_attention_shape(model) -> AttentionShape:
+    """Infer the per-layer KV shape from a Transformers model config."""
     config = model.config
     head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
     return AttentionShape(
@@ -28,18 +32,22 @@ def _infer_attention_shape(model) -> AttentionShape:
 
 
 def _normalize_past_key_values(past_key_values) -> list[tuple[torch.Tensor, torch.Tensor]]:
+    """Convert cache objects into the legacy tuple-of-tuples format used internally."""
     if hasattr(past_key_values, "to_legacy_cache"):
         past_key_values = past_key_values.to_legacy_cache()
     return [(layer[0], layer[1]) for layer in past_key_values]
 
 
 class TrainableKVCartridge(nn.Module):
+    """A compact, trainable KV cache with optional frozen sink tokens at the front."""
+
     def __init__(
         self,
         keys: Iterable[torch.Tensor],
         values: Iterable[torch.Tensor],
         num_frozen_tokens: int = 1,
     ):
+        """Split per-layer keys/values into frozen and trainable token regions."""
         super().__init__()
         keys = [tensor.detach().clone() for tensor in keys]
         values = [tensor.detach().clone() for tensor in values]
@@ -55,6 +63,7 @@ class TrainableKVCartridge(nn.Module):
         self.frozen_values = nn.ParameterList()
 
         for key_tensor, value_tensor in zip(keys, values, strict=True):
+            # Keep the first few positions fixed so training does not destroy the initial sink tokens.
             if num_frozen_tokens > 0:
                 frozen_key = nn.Parameter(key_tensor[..., :num_frozen_tokens, :], requires_grad=False)
                 frozen_value = nn.Parameter(value_tensor[..., :num_frozen_tokens, :], requires_grad=False)
@@ -70,9 +79,11 @@ class TrainableKVCartridge(nn.Module):
 
     @property
     def num_trainable_tokens(self) -> int:
+        """Return the number of token positions optimized during training."""
         return self.num_tokens - self.num_frozen_tokens
 
     def layer(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """Materialize one layer by concatenating frozen and trainable token blocks."""
         key_parts = []
         value_parts = []
         if self.num_frozen_tokens > 0:
@@ -83,12 +94,15 @@ class TrainableKVCartridge(nn.Module):
         return torch.cat(key_parts, dim=-2), torch.cat(value_parts, dim=-2)
 
     def as_legacy_past_key_values(self) -> tuple[tuple[torch.Tensor, torch.Tensor], ...]:
+        """Expose the cartridge in the cache tuple format expected by older HF helpers."""
         return tuple(self.layer(index) for index in range(self.num_layers))
 
     def as_cache(self, model_config) -> DynamicCache:
+        """Wrap the legacy cache into the ``DynamicCache`` object Transformers expects."""
         return DynamicCache(ddp_cache_data=self.as_legacy_past_key_values(), config=model_config)
 
     def canonical_kv_bytes(self) -> int:
+        """Measure the byte footprint of the cartridge K/V tensors exactly as stored."""
         total = 0
         for key, value in self.as_legacy_past_key_values():
             total += key.numel() * key.element_size()
@@ -96,6 +110,7 @@ class TrainableKVCartridge(nn.Module):
         return total
 
     def save(self, path: str | Path) -> None:
+        """Persist the cartridge tensors without optimizer or scheduler state."""
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         torch.save(
@@ -111,6 +126,7 @@ class TrainableKVCartridge(nn.Module):
 
     @classmethod
     def load(cls, path: str | Path, device: str | torch.device | None = None) -> "TrainableKVCartridge":
+        """Load a saved cartridge artifact and optionally move it onto a target device."""
         checkpoint = torch.load(path, map_location=device or "cpu", weights_only=False)
         keys = []
         values = []
@@ -140,6 +156,7 @@ def initialize_from_prefix_text(
     num_tokens: int,
     num_frozen_tokens: int = 1,
 ) -> TrainableKVCartridge:
+    """Initialize a cartridge from the first ``num_tokens`` of raw corpus text."""
     encoded = tokenizer(text, return_tensors="pt", add_special_tokens=False)
     input_ids = encoded["input_ids"][..., :num_tokens].to(model.device)
     outputs = model(input_ids=input_ids, use_cache=True)

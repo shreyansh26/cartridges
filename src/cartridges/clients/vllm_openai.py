@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Thin wrapper over the vLLM OpenAI-compatible API plus tokenizer parity checks."""
+
 import os
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -13,6 +15,7 @@ from cartridges.config import DEFAULT_MATRIX, TOKENIZER_PROBE_TEXT
 
 @dataclass
 class TopLogprobCandidate:
+    """One candidate from a top-k token distribution."""
     token: str
     token_id: int | None
     logprob: float
@@ -20,6 +23,7 @@ class TopLogprobCandidate:
 
 @dataclass
 class TokenLogprob:
+    """Top-k logprob metadata for one generated token."""
     token: str
     token_id: int
     logprob: float
@@ -29,6 +33,7 @@ class TokenLogprob:
 
 @dataclass
 class TokenizerParityReport:
+    """Comparison of local and server-side tokenization for a fixed probe string."""
     model_id: str
     model_revision: str | None
     probe_text: str
@@ -41,6 +46,7 @@ class TokenizerParityReport:
 
 @dataclass
 class ChatCompletionResult:
+    """Normalized chat response returned by the vLLM client wrapper."""
     text: str
     token_ids: list[int]
     token_logprobs: list[TokenLogprob]
@@ -51,6 +57,8 @@ class ChatCompletionResult:
 
 
 class VLLMClient:
+    """Handle chat completions, tokenization probes, and teacher-logprob fallback."""
+
     def __init__(
         self,
         base_url: str,
@@ -62,6 +70,7 @@ class VLLMClient:
         teacher_device: str | None = None,
         timeout_seconds: float = 60.0,
     ):
+        """Construct a vLLM client plus the matching local tokenizer."""
         self.base_url = base_url.rstrip("/")
         self.server_root = self.base_url[:-3] if self.base_url.endswith("/v1") else self.base_url
         self.api_key = api_key
@@ -83,15 +92,18 @@ class VLLMClient:
         self._teacher_model = None
 
     def close(self) -> None:
+        """Close the underlying HTTP client."""
         self.http_client.close()
 
     def _auth_headers(self) -> dict[str, str]:
+        """Build headers for direct HTTP endpoints outside the OpenAI SDK."""
         return {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
 
     def _tokenize_via_server(self, prompt: str) -> list[int]:
+        """Tokenize text through vLLM's tokenizer endpoint for parity checks."""
         response = self.http_client.post(
             f"{self.server_root}/tokenize",
             headers=self._auth_headers(),
@@ -105,6 +117,7 @@ class VLLMClient:
         return tokens
 
     def _render_prompt_text(self, messages: list[dict[str, str]]) -> str:
+        """Render messages with the local tokenizer's chat template."""
         return self.tokenizer.apply_chat_template(
             messages,
             tokenize=False,
@@ -112,6 +125,7 @@ class VLLMClient:
         )
 
     def _best_effort_candidate_id(self, token_text: str) -> int | None:
+        """Resolve token text back to an ID when it maps to exactly one token locally."""
         token_ids = self.tokenizer.encode(token_text, add_special_tokens=False)
         if len(token_ids) == 1:
             return token_ids[0]
@@ -122,6 +136,7 @@ class VLLMClient:
         messages: list[dict[str, str]],
         completion_text: str,
     ) -> list[int]:
+        """Recover completion token IDs by differencing prompt-only and prompt+completion tokenizations."""
         if not completion_text:
             return []
         prompt_text = self._render_prompt_text(messages)
@@ -140,6 +155,7 @@ class VLLMClient:
         completion_token_ids: list[int],
         requested_top_logprobs: int,
     ) -> bool:
+        """Check whether vLLM returned enough logprob data to avoid HF fallback."""
         if not completion_token_ids:
             return True
         if len(raw_logprobs) != len(completion_token_ids):
@@ -153,6 +169,7 @@ class VLLMClient:
         raw_logprobs: list[dict[str, Any]],
         completion_token_ids: list[int],
     ) -> list[TokenLogprob]:
+        """Convert raw vLLM logprob payloads into the repo's normalized structure."""
         token_logprobs: list[TokenLogprob] = []
         for entry, token_id in zip(raw_logprobs, completion_token_ids, strict=True):
             token_text = entry["token"]
@@ -176,6 +193,7 @@ class VLLMClient:
         return token_logprobs
 
     def _load_teacher_model(self):
+        """Lazily load the local HF teacher model used only for smoke-mode fallback."""
         if self._teacher_model is not None:
             return self._teacher_model
         import torch
@@ -192,6 +210,7 @@ class VLLMClient:
         return self._teacher_model
 
     def _normalize_usage(self, usage: Any) -> dict[str, int] | None:
+        """Normalize OpenAI SDK usage objects into plain dictionaries."""
         if usage is None:
             return None
         if hasattr(usage, "model_dump"):
@@ -211,6 +230,7 @@ class VLLMClient:
         completion_text: str,
         top_logprobs: int,
     ) -> tuple[list[int], list[TokenLogprob]]:
+        """Recompute top-k logprobs locally when vLLM does not provide complete ones."""
         import torch
 
         if not completion_text:
@@ -258,17 +278,20 @@ class VLLMClient:
         return completion_token_ids, token_logprobs
 
     def get_served_model(self) -> str:
+        """Return the single model currently advertised by the vLLM server."""
         model_list = self.client.models.list()
         if not model_list.data:
             raise RuntimeError("vLLM server returned no models.")
         return model_list.data[0].id
 
     def assert_server_model_matches(self) -> None:
+        """Ensure the server is actually serving the model this run expects."""
         served_model = self.get_served_model()
         if served_model.lower() != self.model_id.lower():
             raise RuntimeError(f"Expected server model {self.model_id}, got {served_model}.")
 
     def probe_tokenizer_parity(self) -> TokenizerParityReport:
+        """Compare local tokenization against the server tokenizer on a fixed probe string."""
         local_ids = self.tokenizer.encode(TOKENIZER_PROBE_TEXT, add_special_tokens=False)
         if not local_ids:
             raise RuntimeError("Local tokenizer probe returned no token ids.")
@@ -293,6 +316,7 @@ class VLLMClient:
         top_logprobs: int | None = None,
         run_mode: Literal["smoke", "full"] = "smoke",
     ) -> ChatCompletionResult:
+        """Run one chat completion and optionally collect top-k token supervision."""
         response = self.client.chat.completions.create(
             model=self.model_id,
             messages=messages,
@@ -323,6 +347,8 @@ class VLLMClient:
         token_logprobs: list[TokenLogprob] = []
         logprob_source: Literal["vllm", "hf_teacher", "none"] = "none"
         if top_logprobs is not None:
+            # Full runs require server-side top-k parity; smoke runs may fall back to local HF
+            # so the rest of the pipeline can still be exercised when vLLM logprobs are incomplete.
             if self._vllm_logprobs_complete(raw_logprobs, completion_token_ids, top_logprobs):
                 token_logprobs = self._materialize_vllm_logprobs(raw_logprobs, completion_token_ids)
                 logprob_source = "vllm"

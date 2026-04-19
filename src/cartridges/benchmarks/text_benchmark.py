@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Benchmark helpers for bootstrap synthesis, supervision building, and reporting."""
+
 import json
 import re
 import string
@@ -25,6 +27,7 @@ Respond with exactly SAME or DIFFERENT."""
 
 
 def _parse_question_answer_lines(text: str) -> list[tuple[str, str]]:
+    """Parse ``QUESTION ||| ANSWER`` rows out of model output."""
     text = re.sub(r"<think>.*?</think>", " ", text, flags=re.DOTALL)
     if text.startswith("<think>"):
         text = text.removeprefix("<think>").strip()
@@ -44,6 +47,7 @@ def _parse_question_answer_lines(text: str) -> list[tuple[str, str]]:
 
 
 def _content_passages(corpus_text: str) -> list[str]:
+    """Split corpus text into medium-sized passages for bootstrap question generation."""
     paragraphs = [paragraph.strip() for paragraph in corpus_text.split("\n\n") if paragraph.strip()]
     content_paragraphs = [
         paragraph
@@ -97,6 +101,7 @@ BOOTSTRAP_ANSWER_PROMPT = (
 
 
 def _clean_assistant_text(text: str) -> str:
+    """Remove reasoning tags and normalize whitespace in teacher/model output."""
     cleaned = re.sub(r"<think>.*?</think>", " ", text, flags=re.DOTALL)
     if cleaned.startswith("<think>"):
         cleaned = cleaned.removeprefix("<think>").strip()
@@ -104,6 +109,7 @@ def _clean_assistant_text(text: str) -> str:
 
 
 def _assistant_target_token_ids(tokenizer, assistant_text: str) -> list[int]:
+    """Encode the supervised answer and append EOS so the cartridge learns when to stop."""
     assistant_token_ids = tokenizer.encode(assistant_text, add_special_tokens=False)
     eos_token_id = tokenizer.eos_token_id
     if eos_token_id is None:
@@ -122,6 +128,7 @@ def generate_bootstrap_questions(
     batch_size: int = 20,
     max_rounds: int = 40,
 ) -> list[dict[str, str]]:
+    """Use the teacher model to synthesize short factual Q/A pairs from the corpus."""
     forbidden = {item["query"].strip().lower() for item in eval_spec}
     client = VLLMClient(base_url=base_url, api_key=api_key)
     generated: list[dict[str, str]] = []
@@ -145,6 +152,8 @@ def generate_bootstrap_questions(
                 remaining = num_questions - len(generated)
                 prompt_batch_size = min(batch_size, max(4, remaining))
                 recent_seen = sorted(seen)[-20:]
+                # Feed a local passage instead of the full document so bootstrap questions stay
+                # grounded, cheap to generate, and easy to answer with copied text spans.
                 user_prompt = (
                     "/no_think\nPassage:\n"
                     f"{passage}\n\n"
@@ -209,6 +218,7 @@ def generate_teacher_answers(
     api_key: str,
     max_completion_tokens: int,
 ) -> list[dict[str, str]]:
+    """Materialize the exact teacher answers that later become cartridge supervision."""
     del corpus_text
     del base_url
     del api_key
@@ -244,6 +254,7 @@ def build_training_dataset(
     device: str,
     top_logprobs: int,
 ) -> list[dict[str, Any]]:
+    """Convert teacher answers into token-level top-k supervision for distillation."""
     if not answer_records:
         raise ValueError("Cannot build a training dataset without teacher answer records.")
 
@@ -300,6 +311,8 @@ def build_training_dataset(
             top_values, top_indices = torch.topk(log_probs.squeeze(0), k=top_logprobs, dim=-1)
 
             supervision = []
+            # Store only the sparse top-k distribution per position; that is enough for
+            # the cartridge trainer while keeping the dataset compact and inspectable.
             for row_idx, token_id in enumerate(assistant_token_ids):
                 supervision.append(
                         {
@@ -356,13 +369,17 @@ def build_training_dataset(
 
 
 def _safe_mean(values: list[float]) -> float | None:
+    """Return the arithmetic mean or ``None`` when no values are present."""
     if not values:
         return None
     return float(mean(values))
 
 
 class SemanticEquivalenceJudge:
+    """Judge semantic equivalence with a cheap heuristic plus a strict model fallback."""
+
     def __init__(self, *, device: str, model_id: str = DEFAULT_MATRIX.model_id) -> None:
+        """Load the local model used to evaluate relaxed answer equivalence."""
         self.device = device
         self.tokenizer = AutoTokenizer.from_pretrained(model_id)
         self.model = AutoModelForCausalLM.from_pretrained(
@@ -374,12 +391,14 @@ class SemanticEquivalenceJudge:
         self.model.eval()
 
     def close(self) -> None:
+        """Release model memory held by the judge."""
         del self.model
         if self.device.startswith("cuda"):
             torch.cuda.empty_cache()
 
     @staticmethod
     def _normalize_answer_text(text: str) -> str:
+        """Normalize punctuation/articles away for the cheap equivalence heuristic."""
         cleaned = _clean_assistant_text(text).lower()
         cleaned = cleaned.translate(str.maketrans("", "", string.punctuation))
         cleaned = re.sub(r"\b(a|an|the)\b", " ", cleaned)
@@ -387,11 +406,13 @@ class SemanticEquivalenceJudge:
 
     @classmethod
     def _tokenize_normalized_answer(cls, text: str) -> list[str]:
+        """Tokenize normalized text into whitespace-separated pieces."""
         normalized = cls._normalize_answer_text(text)
         return normalized.split() if normalized else []
 
     @classmethod
     def _contains_token_subsequence(cls, larger: list[str], smaller: list[str]) -> bool:
+        """Check whether one normalized token list appears inside another."""
         if not smaller or len(smaller) > len(larger):
             return False
         width = len(smaller)
@@ -399,6 +420,7 @@ class SemanticEquivalenceJudge:
 
     @classmethod
     def _heuristic_equivalent(cls, *, references: list[str], candidate: str) -> bool:
+        """Accept obvious wrapper-only variants without spending a model forward pass."""
         candidate_normalized = cls._normalize_answer_text(candidate)
         if not candidate_normalized:
             return False
@@ -429,6 +451,7 @@ class SemanticEquivalenceJudge:
         references: list[str],
         candidate: str,
     ) -> str:
+        """Render the structured SAME/DIFFERENT judging prompt."""
         reference_lines = "\n".join(f"- {item}" for item in references)
         messages = [
             {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
@@ -457,6 +480,7 @@ class SemanticEquivalenceJudge:
         references: list[str],
         candidate: str,
     ) -> bool:
+        """Fall back to deterministic generation when heuristics are inconclusive."""
         prompt_text = self._render_prompt(
             question=question,
             references=references,
@@ -489,6 +513,7 @@ class SemanticEquivalenceJudge:
         references: list[str],
         candidate: str,
     ) -> bool:
+        """Return whether a candidate answer is semantically equivalent to any reference."""
         if self._heuristic_equivalent(references=references, candidate=candidate):
             return True
         return self._model_is_equivalent(
@@ -512,6 +537,7 @@ def write_budget_report(
     semantic_judge: bool = False,
     judge_device: str | None = None,
 ) -> dict[str, Any]:
+    """Merge baseline and cartridge predictions into one per-budget report."""
     baseline_rows = [
         json.loads(line)
         for line in Path(baseline_path).read_text(encoding="utf-8").splitlines()
@@ -589,6 +615,7 @@ def write_budget_report(
     if judge is not None:
         judge.close()
 
+    # The first query is treated separately because cartridge build cost is paid before it.
     baseline_first = paired_rows[0]
     followups = paired_rows[1:]
     summary = {
@@ -786,6 +813,7 @@ def write_run_report(
     run_dir: str | Path,
     budget_summaries: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    """Write the aggregate report that compares multiple cartridge budgets in one run."""
     if not budget_summaries:
         raise ValueError("Cannot write an aggregate run report without budget summaries.")
 

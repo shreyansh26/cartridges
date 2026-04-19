@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Load and materialize the repo's standardized ``data/<experiment>/`` layout."""
+
 import json
 from pathlib import Path
 from typing import Any
@@ -15,6 +17,7 @@ def resolve_experiment_dir(
     *,
     data_root: str | Path,
 ) -> Path:
+    """Resolve ``data/<experiment_name>`` and fail if it does not exist."""
     experiment_dir = Path(data_root) / experiment_name
     if not experiment_dir.is_dir():
         raise FileNotFoundError(f"Experiment directory not found: {experiment_dir}")
@@ -26,6 +29,7 @@ def load_experiment_inputs(
     *,
     data_root: str | Path,
 ) -> dict[str, Any]:
+    """Load the required input files and optional metadata for one experiment."""
     experiment_dir = resolve_experiment_dir(experiment_name, data_root=data_root)
     data_path = experiment_dir / "data.txt"
     eval_spec_path = experiment_dir / "eval_spec.json"
@@ -57,6 +61,7 @@ def build_text_manifest(
     stride_tokens: int | None = None,
     corpus_id: str | None = None,
 ) -> dict[str, Any]:
+    """Tokenize ``data.txt`` into one or more fixed-size windows and write a manifest."""
     source_path = Path(source_path)
     output_path = Path(output_path)
     stride_tokens = stride_tokens or chunk_tokens
@@ -66,6 +71,8 @@ def build_text_manifest(
     token_ids = tokenizer.encode(text, add_special_tokens=False)
 
     chunks: list[dict[str, Any]] = []
+    # The benchmark currently expects a single chunk, but the manifest keeps chunk metadata explicit
+    # so the layout can grow into routed multi-cartridge experiments later.
     for start in range(0, max(len(token_ids) - chunk_tokens + 1, 1), stride_tokens):
         window = token_ids[start : start + chunk_tokens]
         if not window:
@@ -95,6 +102,7 @@ def build_text_manifest(
 
 
 def load_single_chunk_text(manifest_path: str | Path) -> tuple[str, str]:
+    """Read back the sole chunk used by the current single-cartridge benchmark."""
     payload = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
     chunks = payload["chunks"]
     if len(chunks) != 1:
@@ -112,6 +120,7 @@ def build_eval_rows_from_spec(
     output_path: str | Path,
     sample_id: str,
 ) -> list[dict[str, Any]]:
+    """Expand ``eval_spec.json`` into JSONL rows that the evaluators consume directly."""
     context = Path(corpus_path).read_text(encoding="utf-8")
     spec_rows = json.loads(Path(spec_path).read_text(encoding="utf-8"))
     rows: list[dict[str, Any]] = []

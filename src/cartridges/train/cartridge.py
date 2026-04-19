@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Distill teacher responses into a trainable KV cartridge."""
+
 import json
 import math
 import random
@@ -20,6 +22,7 @@ from cartridges.data.common import stable_hash, write_json
 
 @dataclass(frozen=True)
 class TrainingExample:
+    """One teacher-supervised training row targeting a single cartridge slice."""
     record_id: str
     slice_id: str
     system_prompt: str
@@ -29,6 +32,7 @@ class TrainingExample:
 
 
 def _set_training_seed(seed: int) -> None:
+    """Set Python and Torch RNGs so repeated runs stay comparable."""
     random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
@@ -39,6 +43,7 @@ def _set_training_seed(seed: int) -> None:
 
 
 def load_training_examples(path: str | Path) -> list[TrainingExample]:
+    """Load the JSONL training dataset emitted by ``build_training_dataset``."""
     rows: list[TrainingExample] = []
     with Path(path).open("r", encoding="utf-8") as handle:
         for line in handle:
@@ -61,6 +66,7 @@ def load_training_examples(path: str | Path) -> list[TrainingExample]:
 
 
 def _training_prompt(tokenizer, user_message: str) -> torch.Tensor:
+    """Tokenize the user-side prompt exactly as it will appear at inference time."""
     prompt_text = tokenizer.apply_chat_template(
         [{"role": "user", "content": user_message}],
         tokenize=False,
@@ -74,6 +80,7 @@ def _sparse_distillation_loss(
     logits: torch.Tensor,
     supervision: list[dict[str, Any]],
 ) -> torch.Tensor:
+    """Approximate KL distillation with a sparse teacher distribution per output token."""
     log_probs = torch.log_softmax(logits.float(), dim=-1)
     token_losses: list[torch.Tensor] = []
     for row_idx, token_supervision in enumerate(supervision):
@@ -105,6 +112,7 @@ def _compute_example_loss(
     example: TrainingExample,
     device: str,
 ) -> torch.Tensor:
+    """Compute the distillation loss for one prompt/answer pair."""
     prompt_ids = _training_prompt(tokenizer, example.user_message).to(device)
     if len(example.assistant_token_ids) > 1:
         assistant_prefix = torch.tensor(
@@ -136,6 +144,7 @@ def _evaluate_examples_loss(
     examples: list[TrainingExample],
     device: str,
 ) -> float:
+    """Average loss over a fixed validation subset for stable checkpoint selection."""
     if not examples:
         raise ValueError("Validation examples must not be empty.")
     losses: list[float] = []
@@ -162,6 +171,7 @@ def _save_checkpoint(
     loss_history: list[float],
     metadata: dict[str, Any],
 ) -> None:
+    """Persist cartridge weights together with optimizer and RNG state for resume."""
     checkpoint = {
         "num_frozen_tokens": cartridge.num_frozen_tokens,
         "keys": [layer[0].detach().cpu() for layer in cartridge.as_legacy_past_key_values()],
@@ -185,6 +195,7 @@ def _load_checkpoint(
     *,
     device: str,
 ) -> tuple[TrainableKVCartridge, dict[str, Any]]:
+    """Reload a saved training checkpoint into a live cartridge object."""
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
     cartridge = TrainableKVCartridge(
         keys=checkpoint["keys"],
@@ -212,6 +223,7 @@ def train_cartridge(
     validation_examples: int = 16,
     validation_interval: int = 10,
 ) -> dict[str, Any]:
+    """Train one cartridge budget against a fixed supervision dataset."""
     if steps <= 0:
         raise ValueError("steps must be positive.")
     if gradient_accumulation_steps <= 0:
@@ -304,6 +316,8 @@ def train_cartridge(
 
         should_step = ((step_idx - start_step + 1) % gradient_accumulation_steps) == 0
         if should_step:
+            # Cartridge optimization is high variance; clipping plus periodic validation
+            # makes checkpoint selection much more stable than a single minibatch minimum.
             torch.nn.utils.clip_grad_norm_(cartridge.parameters(), max_grad_norm)
             optimizer.step()
             scheduler.step()

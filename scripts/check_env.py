@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+"""Validate local environment prerequisites for smoke and full benchmark runs."""
+
 from __future__ import annotations
 
 import argparse
@@ -27,6 +29,7 @@ from cartridges.config import (  # noqa: E402
 
 @dataclass
 class GPUInfo:
+    """Snapshot of one GPU's availability and active compute processes."""
     index: int
     uuid: str
     memory_total_mib: int
@@ -36,10 +39,12 @@ class GPUInfo:
 
 
 def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+    """Run a subprocess and capture stdout/stderr without raising automatically."""
     return subprocess.run(cmd, check=False, capture_output=True, text=True)
 
 
 def _query_gpus() -> list[GPUInfo]:
+    """Read GPU inventory plus active compute processes from ``nvidia-smi``."""
     gpu_result = _run(
         [
             "nvidia-smi",
@@ -92,6 +97,7 @@ def _query_gpus() -> list[GPUInfo]:
 
 
 def _port_is_free(port: int) -> bool:
+    """Return whether the local vLLM port can be bound on localhost."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
@@ -102,6 +108,7 @@ def _port_is_free(port: int) -> bool:
 
 
 def _select_gpu(mode: str, gpus: list[GPUInfo]) -> tuple[GPUInfo | None, list[str]]:
+    """Pick the first allowed GPU that satisfies the repo's selection policy."""
     errors: list[str] = []
     allowed = [gpu for gpu in gpus if gpu.index not in DISALLOWED_GPUS]
     allowed_by_index = {gpu.index: gpu for gpu in allowed}
@@ -130,6 +137,7 @@ def _select_gpu(mode: str, gpus: list[GPUInfo]) -> tuple[GPUInfo | None, list[st
 
 
 def main() -> int:
+    """Validate ports, auth, W&B mode, and GPU availability for one run mode."""
     parser = argparse.ArgumentParser(description="Validate local environment prerequisites.")
     parser.add_argument("--mode", choices=("smoke", "full"), default="smoke")
     parser.add_argument("--port", type=int, default=None)

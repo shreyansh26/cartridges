@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Matched-backend evaluation for cartridge-backed inference."""
+
 import re
 import time
 from pathlib import Path
@@ -21,6 +23,7 @@ from cartridges.eval.common import (
 
 
 def _head_dim(model_config) -> int:
+    """Infer a model's per-head KV dimension across config variants."""
     return getattr(
         model_config,
         "head_dim",
@@ -29,11 +32,13 @@ def _head_dim(model_config) -> int:
 
 
 def _sync_if_cuda(device: str) -> None:
+    """Synchronize CUDA work so the recorded timings reflect completed kernels."""
     if device.startswith("cuda"):
         torch.cuda.synchronize(device)
 
 
 def _clean_completion(text: str) -> str:
+    """Normalize cartridge completions before scoring and semantic judging."""
     text = re.sub(r"<think>.*?</think>", " ", text, flags=re.DOTALL)
     text = text.replace("<think>", " ").replace("</think>", " ")
     if text.startswith("<think>"):
@@ -52,6 +57,7 @@ def run_cartridge_eval(
     max_samples: int | None = None,
     max_completion_tokens: int = 128,
 ) -> list[EvalRecord]:
+    """Run local HF inference with a precomputed cartridge instead of full corpus text."""
     rows = load_eval_rows(eval_path)
     if sample_id is not None:
         rows = [row for row in rows if row["sample_id"] == sample_id]
@@ -74,6 +80,7 @@ def run_cartridge_eval(
     records: list[EvalRecord] = []
     with torch.inference_mode():
         for row in rows:
+            # Reconstruct the baseline prompt length only for byte-for-byte KV accounting.
             baseline_prompt = tokenizer.apply_chat_template(
                 build_messages(row),
                 tokenize=False,

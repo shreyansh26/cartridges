@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Baseline evaluators for full-context prompting."""
+
 import re
 import time
 from pathlib import Path
@@ -20,6 +22,7 @@ from cartridges.eval.common import (
 
 
 def _head_dim(model_config) -> int:
+    """Infer a model's per-head KV dimension across config variants."""
     return getattr(
         model_config,
         "head_dim",
@@ -28,11 +31,13 @@ def _head_dim(model_config) -> int:
 
 
 def _sync_if_cuda(device: str) -> None:
+    """Synchronize CUDA work so wall-clock timings line up with actual execution."""
     if device.startswith("cuda"):
         torch.cuda.synchronize(device)
 
 
 def _clean_completion(text: str) -> str:
+    """Strip reasoning markers from decoded model output before scoring."""
     text = re.sub(r"<think>.*?</think>", " ", text, flags=re.DOTALL)
     text = text.replace("<think>", " ").replace("</think>", " ")
     if text.startswith("<think>"):
@@ -49,6 +54,7 @@ def run_vllm_quality_eval(
     max_samples: int | None = None,
     max_completion_tokens: int = 128,
 ) -> list[EvalRecord]:
+    """Evaluate the naive full-context baseline through the vLLM teacher server."""
     rows = load_eval_rows(eval_path)
     if max_samples is not None:
         rows = rows[:max_samples]
@@ -131,6 +137,7 @@ def run_local_hf_matched_eval(
     max_samples: int | None = None,
     max_completion_tokens: int = 128,
 ) -> list[EvalRecord]:
+    """Evaluate the naive full-context baseline on local HF for matched timing."""
     rows = load_eval_rows(eval_path)
     if max_samples is not None:
         rows = rows[:max_samples]
@@ -159,6 +166,7 @@ def run_local_hf_matched_eval(
             input_ids = encoded["input_ids"].to(device)
             prompt_tokens = input_ids.shape[-1]
 
+            # Split timing into prefill and decode so cartridge savings are visible separately.
             _sync_if_cuda(device)
             prefill_started = time.perf_counter()
             outputs = model(input_ids=input_ids, use_cache=True)

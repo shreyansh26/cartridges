@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+"""Launch a foreground vLLM server with repo defaults."""
+
 import argparse
 import os
 import subprocess
@@ -12,6 +14,7 @@ from cartridges.config import DEFAULT_MATRIX, DEFAULT_VLLM_PORT  # noqa: E402
 
 
 def main() -> int:
+    """Build the ``vllm serve`` command line and proxy its exit code."""
     parser = argparse.ArgumentParser(
         description="Launch a foreground vLLM OpenAI-compatible server."
     )
@@ -77,6 +80,7 @@ def main() -> int:
     if not args.disable_tokenizer_info_endpoint:
         command.append("--enable-tokenizer-info-endpoint")
 
+    # Keep this wrapper intentionally thin so the benchmark runner and manual usage share defaults.
     print("Launching:", " ".join(command))
     process = subprocess.run(command, check=False)
     return process.returncode

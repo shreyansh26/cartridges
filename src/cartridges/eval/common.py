@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Shared prompt building and scoring helpers for baseline and cartridge evaluation."""
+
 import json
 import re
 from pathlib import Path
@@ -16,6 +18,7 @@ SYSTEM_PROMPT = """Please answer the user's question using only the provided con
 Follow the requested answer format exactly. Do not emit <think> tags or chain-of-thought."""
 
 class EvalRecord(BaseModel):
+    """Normalized evaluation record written by both baseline and cartridge evaluators."""
     model_config = ConfigDict(extra="forbid")
 
     prompt_id: str
@@ -34,6 +37,7 @@ class EvalRecord(BaseModel):
 
 
 def load_eval_rows(path: str | Path) -> list[dict[str, Any]]:
+    """Load evaluation rows from JSONL and fail loudly on empty inputs."""
     rows: list[dict[str, Any]] = []
     with Path(path).open("r", encoding="utf-8") as handle:
         for line in handle:
@@ -45,6 +49,7 @@ def load_eval_rows(path: str | Path) -> list[dict[str, Any]]:
 
 
 def write_eval_records(path: str | Path, records: list[EvalRecord]) -> None:
+    """Serialize evaluation records as JSONL."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
@@ -54,6 +59,7 @@ def write_eval_records(path: str | Path, records: list[EvalRecord]) -> None:
 
 
 def build_messages(row: dict[str, Any]) -> list[dict[str, str]]:
+    """Build the full-context baseline prompt with the corpus embedded as a system message."""
     user_prompt = f"/no_think\n{row['query']}\n\n{row['answer_prompt']}"
     return [
         {"role": "system", "content": SYSTEM_PROMPT.format(context=row["context"])},
@@ -62,6 +68,7 @@ def build_messages(row: dict[str, Any]) -> list[dict[str, str]]:
 
 
 def build_cartridge_messages(row: dict[str, Any]) -> list[dict[str, str]]:
+    """Build the cartridge prompt that assumes context already lives inside the KV cache."""
     user_prompt = f"/no_think\n{row['query']}\n\n{row['answer_prompt']}"
     return [{"role": "user", "content": user_prompt}]
 
@@ -74,6 +81,7 @@ def canonical_kv_bytes(
     head_dim: int,
     dtype_bytes: int = 2,
 ) -> int:
+    """Compute the exact KV-cache footprint implied by token and model dimensions."""
     return (
         num_tokens
         * num_hidden_layers
@@ -85,6 +93,7 @@ def canonical_kv_bytes(
 
 
 def normalize_prediction(text: str) -> list[str]:
+    """Normalize free-form predictions for the repo's strict exact-match metric."""
     cleaned = re.sub(r"<think>.*?</think>", " ", text, flags=re.DOTALL)
     cleaned = cleaned.replace("<think>", " ").replace("</think>", " ")
     number_matches = re.findall(r"\d+", cleaned)
@@ -94,4 +103,5 @@ def normalize_prediction(text: str) -> list[str]:
 
 
 def exact_match(prediction: str, gold: list[str]) -> bool:
+    """Apply the benchmark's exact-match rule after normalization."""
     return normalize_prediction(prediction) == sorted(str(item) for item in gold)

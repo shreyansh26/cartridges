@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+"""Run the end-to-end benchmark for one dataset directory under ``data/``."""
+
 from __future__ import annotations
 
 import argparse
@@ -42,6 +44,7 @@ def _start_vllm_server(
     max_model_len: int,
     log_path: Path,
 ) -> subprocess.Popen[str]:
+    """Launch the local vLLM teacher server used during bootstrap synthesis."""
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = str(gpu_index)
     command = [
@@ -69,6 +72,7 @@ def _start_vllm_server(
 
 
 def _wait_for_server(base_url: str, api_key: str, timeout_seconds: float = 240.0) -> None:
+    """Block until the managed vLLM server responds to health and model probes."""
     deadline = time.time() + timeout_seconds
     with httpx.Client(timeout=5.0) as client:
         while time.time() < deadline:
@@ -87,6 +91,7 @@ def _wait_for_server(base_url: str, api_key: str, timeout_seconds: float = 240.0
 
 
 def _stop_vllm_server(process: subprocess.Popen[str], port: int) -> None:
+    """Stop the managed vLLM process and verify that the port is no longer live."""
     if process.poll() is None:
         os.killpg(process.pid, signal.SIGINT)
         process.wait(timeout=120)
@@ -103,6 +108,7 @@ def _copy_inputs(
     inputs: dict[str, object],
     destination_dir: Path,
 ) -> dict[str, str]:
+    """Copy dataset inputs into the run directory for reproducible outputs."""
     destination_dir.mkdir(parents=True, exist_ok=True)
     copied: dict[str, str] = {}
     for key in ("data_path", "eval_spec_path", "metadata_path"):
@@ -117,6 +123,7 @@ def _copy_inputs(
 
 
 def _update_latest_pointer(run_dir: Path, *, output_root: Path, experiment_name: str) -> None:
+    """Point ``outputs/<experiment>/latest`` at the run that just completed."""
     latest_path = output_root / experiment_name / "latest"
     if latest_path.is_symlink() or latest_path.exists():
         latest_path.unlink()
@@ -124,6 +131,7 @@ def _update_latest_pointer(run_dir: Path, *, output_root: Path, experiment_name:
 
 
 def main() -> int:
+    """Execute the full benchmark pipeline for one experiment directory."""
     parser = argparse.ArgumentParser(
         description="Run the generic single-corpus benchmark for full context vs cartridges.",
     )
@@ -166,6 +174,7 @@ def main() -> int:
     baseline_dir = run_dir / "baseline"
     baseline_predictions_path = baseline_dir / "predictions.jsonl"
 
+    # Materialize the dataset into a manifest plus exact-match eval rows before any model work starts.
     build_text_manifest(
         source_path=inputs["data_path"],
         output_path=manifest_path,
@@ -198,6 +207,7 @@ def main() -> int:
     try:
         if managed_server:
             _wait_for_server(base_url=base_url, api_key=args.api_key)
+        # The teacher phase runs against full context once to synthesize supervision.
         bootstrap_examples = generate_bootstrap_questions(
             corpus_text=corpus_text,
             eval_spec=eval_spec,
@@ -218,6 +228,7 @@ def main() -> int:
         if managed_server and server is not None:
             _stop_vllm_server(server, port=args.port)
 
+    # Convert teacher answers into token-level supervision for cartridge distillation.
     build_training_dataset(
         corpus_text=corpus_text,
         slice_id=slice_id,
@@ -240,6 +251,7 @@ def main() -> int:
         budget_label = f"cartridge_{cartridge_tokens}"
         budget_dir = run_dir / budget_label
         train_started = time.perf_counter()
+        # Each budget trains its own compressed KV cache against the shared supervision dataset.
         train_summary = train_cartridge(
             dataset_path=training_dataset_path,
             output_dir=budget_dir / "train",
@@ -255,6 +267,7 @@ def main() -> int:
         )
         train_seconds = time.perf_counter() - train_started
         cartridge_predictions_path = budget_dir / "predictions.jsonl"
+        # Cartridge inference uses the same HF backend as the matched baseline so timing is comparable.
         run_cartridge_eval(
             eval_path=eval_rows_path,
             cartridge_path=train_summary["cartridge_path"],
@@ -288,6 +301,7 @@ def main() -> int:
         )
         budget_summaries.append(summary)
 
+    # The run manifest is the stable index for everything generated during one invocation.
     aggregate_report = write_run_report(
         experiment_name=args.experiment_name,
         run_dir=run_dir,
