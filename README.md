@@ -208,6 +208,22 @@ flowchart TD
     L --> M
 ```
 
+### Multi-Chunk Training Versus Inference Routing
+
+For a multi-chunk corpus, this repo trains cartridges per slice, not jointly through the retriever.
+
+- Training time: each chunk gets its own bootstrap questions, teacher answers, supervision dataset, and cartridge. So for one budget `p`, the runner trains one cartridge per chunk independently.
+- Inference time: retrieval chooses one chunk for each held-out question, and the evaluator injects only that chunk's pre-trained cartridge.
+
+So the current implementation is:
+
+- one cartridge per `(slice_id, cartridge_budget)`
+- no gradient routing across cartridges
+- no joint "choose which cartridge to update" step during training
+- top-1 retrieval only at evaluation/inference time
+
+This means the retriever does not participate in training the cartridge tensors. It only selects which already-trained slice-specific cartridge should answer a given question.
+
 ## What `run_benchmark.py` Actually Does
 
 When you run [run_benchmark.py](/mnt/ssd1/shreyansh/home_dir/cartridges/scripts/run_benchmark.py), the control flow is:
