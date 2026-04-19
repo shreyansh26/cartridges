@@ -278,7 +278,7 @@ The repo has the aggregate run reports for the following experiments:
 - Aggregate report: [comparison.md](/mnt/ssd1/shreyansh/home_dir/cartridges/outputs/wikipedia_history_us/runs/history_us_512_1024_stable/report/comparison.md)
 - Aggregate summary: [summary.json](/mnt/ssd1/shreyansh/home_dir/cartridges/outputs/wikipedia_history_us/runs/history_us_512_1024_stable/report/summary.json)
 
-### `cartridge_1024`
+#### `cartridge_1024`
 
 Observed numbers:
 
@@ -294,7 +294,7 @@ Observed numbers:
 - Cartridge follow-up latency: `209.97 ms`
 - One-time build time: `401.03 s`
 
-### `cartridge_512`
+#### `cartridge_512`
 
 Observed numbers:
 
@@ -314,7 +314,7 @@ The `1024` budget is the better balanced result on this page: it keeps semantic 
 
 ### `wikipedia_india`
 
-### `cartridge_1024`
+#### `cartridge_1024`
 
 - Aggregate report: [comparison.md](/mnt/ssd1/shreyansh/home_dir/cartridges/outputs/wikipedia_india/runs/india_1024_stable/report/comparison.md)
 - Aggregate summary: [summary.json](/mnt/ssd1/shreyansh/home_dir/cartridges/outputs/wikipedia_india/runs/india_1024_stable/report/summary.json)
@@ -332,7 +332,7 @@ Observed numbers:
 - Cartridge follow-up latency: `238.40 ms`
 - One-time build time: `125.35 s`
 
-### `cartridge_512`
+#### `cartridge_512`
 
 - Aggregate report: [comparison.md](/mnt/ssd1/shreyansh/home_dir/cartridges/outputs/wikipedia_india/runs/india_512_stable/report/comparison.md)
 - Aggregate summary: [summary.json](/mnt/ssd1/shreyansh/home_dir/cartridges/outputs/wikipedia_india/runs/india_512_stable/report/summary.json)
