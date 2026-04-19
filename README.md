@@ -150,15 +150,15 @@ So the prefix pass gives the cartridge a sensible starting point, but the traina
 
 ```mermaid
 flowchart LR
-    A[Long corpus x_1:L]
-    B[Prefix initialization for first p tokens]
-    C[Initial KV tensors]
-    D[Freeze sink tokens, train remaining KV slots]
-    E[Teacher top-k answer supervision]
-    F[Optimized cartridge]
-    G[Question-only prompt]
-    H[Frozen base model + cartridge cache]
-    I[Answer]
+    A["Long corpus x_1:L"]
+    B["Prefix initialization for first p tokens"]
+    C["Initial KV tensors"]
+    D["Freeze sink tokens, train remaining KV slots"]
+    E["Teacher top-k answer supervision"]
+    F["Optimized cartridge"]
+    G["Question-only prompt"]
+    H["Frozen base model + cartridge cache"]
+    I["Answer"]
 
     A --> B --> C --> D
     E --> D
@@ -180,19 +180,19 @@ The core cartridge object is [cartridge.py](src/cartridges/core/cartridge.py). T
 
 ```mermaid
 flowchart TD
-    A[data/{experiment}/data.txt + eval_spec.json]
-    B[build_text_manifest + build_eval_rows_from_spec]
-    C[build_retrieval_index + route_eval_questions]
-    D[start managed vLLM server]
-    E[generate_bootstrap_questions per chunk]
-    F[generate_teacher_answers per chunk]
-    G[stop vLLM server]
-    H[build_training_dataset per chunk]
-    I[run_local_hf_matched_eval on full context]
-    J[train_cartridge per chunk and budget]
-    K[run routed run_cartridge_eval per budget]
-    L[write_budget_report]
-    M[write_run_report + run_manifest]
+    A["data/{experiment}/data.txt + eval_spec.json"]
+    B["build_text_manifest + build_eval_rows_from_spec"]
+    C["build_retrieval_index + route_eval_questions"]
+    D["start managed vLLM server"]
+    E["generate_bootstrap_questions per chunk"]
+    F["generate_teacher_answers per chunk"]
+    G["stop vLLM server"]
+    H["build_training_dataset per chunk"]
+    I["run_local_hf_matched_eval on full context"]
+    J["train_cartridge per chunk and budget"]
+    K["run routed run_cartridge_eval per budget"]
+    L["write_budget_report"]
+    M["write_run_report + run_manifest"]
 
     A --> B
     B --> C
