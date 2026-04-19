@@ -5,6 +5,11 @@ tokens attend to a compact memory instead of the full document. Training (see
 ``cartridges.train.cartridge``) initializes it from the first ``num_tokens`` of the
 chunk ``system_prompt`` via ``initialize_from_prefix_text``, then optimizes the
 trainable tail while the frozen prefix keeps attention-sink behavior stable.
+
+The important subtlety is that only the initialization is a literal prefix cache. After
+distillation, the trainable slots are just learned K/V tensors that were seeded from the
+prefix; they can move away from "token i in the original document" and become a compact
+memory encoding facts from anywhere in the chunk.
 """
 
 from dataclasses import dataclass
@@ -23,17 +28,6 @@ class AttentionShape:
     num_key_value_heads: int
     head_dim: int
     dtype_bytes: int = 2
-
-
-def _infer_attention_shape(model) -> AttentionShape:
-    """Infer the per-layer KV shape from a Transformers model config."""
-    config = model.config
-    head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
-    return AttentionShape(
-        num_hidden_layers=config.num_hidden_layers,
-        num_key_value_heads=config.num_key_value_heads,
-        head_dim=head_dim,
-    )
 
 
 def _normalize_past_key_values(past_key_values) -> list[tuple[torch.Tensor, torch.Tensor]]:
@@ -171,6 +165,12 @@ def initialize_from_prefix_text(
     In the benchmark trainer, ``text`` is typically ``TrainingExample.system_prompt``
     (context + instructions), not the user question; distillation then teaches the
     cartridge to help answer when that same system prompt is paired with user messages.
+
+    Only the first ``num_tokens`` of ``text`` are used here, so this function gives the
+    cartridge a reasonable starting point, not its final semantics. Later gradient updates
+    push the trainable K/V slots to mimic full-context teacher behavior, which is how a
+    512/1024-slot cartridge can come to represent information from later parts of a much
+    longer chunk.
     """
     encoded = tokenizer(text, return_tensors="pt", add_special_tokens=False)
     input_ids = encoded["input_ids"][..., :num_tokens].to(model.device)

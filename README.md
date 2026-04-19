@@ -134,6 +134,18 @@ Where:
 
 This is implemented in [cartridge.py](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/train/cartridge.py).
 
+### Why Prefix Initialization Can Still Encode Later Facts
+
+One point that is easy to miss: the cartridge is initialized from only the first `p` tokens of the chunk, but it is not constrained to remain "the KV cache of those first `p` tokens."
+
+The actual sequence is:
+
+1. Build full-context teacher supervision from the entire chunk embedded in the system prompt.
+2. Initialize the cartridge from the first `p` tokens of that system prompt.
+3. Freeze the base model weights and optimize only the cartridge K/V tensors so the small cartridge reproduces the teacher's answer distribution.
+
+So the prefix pass gives the cartridge a sensible starting point, but the trainable slots are then free to move and become a learned compressed memory. After training, a cartridge slot no longer needs to correspond to one original token position in the source text. It can encode information that was originally spread across later parts of the chunk as long as doing so reduces the distillation loss.
+
 ## Cartridge Mechanics
 
 ```mermaid
@@ -161,6 +173,7 @@ The core cartridge object is [cartridge.py](/mnt/ssd1/shreyansh/home_dir/cartrid
 - `initialize_from_prefix_text(...)` seeds the cartridge from the first `p` tokens of the corpus.
 - `TrainableKVCartridge` stores one KV tensor pair per transformer layer.
 - The first few positions can be frozen as attention-sink tokens.
+- The remaining trainable positions are optimized against full-context teacher supervision, so they become a learned compressed memory rather than a literal copy of the initial prefix.
 - `as_cache(...)` converts the saved tensors into the HF cache object used at inference time.
 
 ## End-To-End Flow

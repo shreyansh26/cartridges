@@ -281,7 +281,13 @@ def train_cartridge(
     validation_examples: int = 16,
     validation_interval: int = 10,
 ) -> dict[str, Any]:
-    """Train one cartridge budget against a fixed supervision dataset."""
+    """Train one cartridge budget against a fixed supervision dataset.
+
+    The cartridge starts from a truncated prefix KV cache, but the supervision dataset was
+    produced from the full chunk context. Optimization therefore teaches the small cartridge
+    to approximate full-context behavior rather than to stay a literal cache for only the
+    first ``cartridge_tokens`` input tokens.
+    """
     if steps <= 0:
         raise ValueError("steps must be positive.")
     if gradient_accumulation_steps <= 0:
@@ -340,6 +346,9 @@ def train_cartridge(
         start_step = int(checkpoint["global_step"])
         loss_history = [float(value) for value in checkpoint["loss_history"]]
     else:
+        # Seed the cartridge from the first ``cartridge_tokens`` positions of the chunk-level
+        # system prompt. This is only an initialization: the trainable K/V tensors below are
+        # subsequently optimized against supervision that came from the full chunk context.
         cartridge = initialize_from_prefix_text(
             model=model,
             tokenizer=tokenizer,
@@ -370,6 +379,8 @@ def train_cartridge(
         )
         loss_value = float(loss.item())
         loss_history.append(loss_value)
+        # Gradients flow only into ``cartridge.parameters()``. The parent model weights were
+        # frozen above, so backprop updates the trainable K/V slots rather than the LLM itself.
         (loss / gradient_accumulation_steps).backward()
 
         should_step = ((step_idx - start_step + 1) % gradient_accumulation_steps) == 0

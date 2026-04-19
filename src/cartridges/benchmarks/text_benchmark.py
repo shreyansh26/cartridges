@@ -464,6 +464,7 @@ def build_training_dataset(
     model.eval()
 
     rows: list[dict[str, Any]] = []
+    # system prompt is the instructions + context (large text corpus)
     system_prompt = (
         "Please answer the user's question using only the provided context.\n\n"
         f"<context>\n{corpus_text}\n</context>\n\n"
