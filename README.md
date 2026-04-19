@@ -105,35 +105,6 @@ Where:
 
 This is implemented in [cartridge.py](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/train/cartridge.py).
 
-## End-To-End Flow
-
-```mermaid
-flowchart TD
-    A[data/<experiment>/data.txt + eval_spec.json]
-    B[build_text_manifest + build_eval_rows_from_spec]
-    C[start managed vLLM server]
-    D[generate_bootstrap_questions]
-    E[generate_teacher_answers]
-    F[build_training_dataset]
-    G[stop vLLM server]
-    H[run_local_hf_matched_eval]
-    I[train_cartridge per budget]
-    J[run_cartridge_eval per budget]
-    K[write_budget_report]
-    L[write_run_report + run_manifest]
-
-    A --> B
-    B --> C
-    C --> D --> E --> F
-    F --> G
-    G --> H
-    F --> I
-    I --> J
-    H --> K
-    J --> K
-    K --> L
-```
-
 ## Cartridge Mechanics
 
 ```mermaid
@@ -162,6 +133,35 @@ The core cartridge object is [cartridge.py](/mnt/ssd1/shreyansh/home_dir/cartrid
 - `TrainableKVCartridge` stores one KV tensor pair per transformer layer.
 - The first few positions can be frozen as attention-sink tokens.
 - `as_cache(...)` converts the saved tensors into the HF cache object used at inference time.
+
+## End-To-End Flow
+
+```mermaid
+flowchart TD
+    A[data/<experiment>/data.txt + eval_spec.json]
+    B[build_text_manifest + build_eval_rows_from_spec]
+    C[start managed vLLM server]
+    D[generate_bootstrap_questions]
+    E[generate_teacher_answers]
+    F[build_training_dataset]
+    G[stop vLLM server]
+    H[run_local_hf_matched_eval]
+    I[train_cartridge per budget]
+    J[run_cartridge_eval per budget]
+    K[write_budget_report]
+    L[write_run_report + run_manifest]
+
+    A --> B
+    B --> C
+    C --> D --> E --> F
+    F --> G
+    G --> H
+    F --> I
+    I --> J
+    H --> K
+    J --> K
+    K --> L
+```
 
 ## What `run_benchmark.py` Actually Does
 
@@ -247,9 +247,9 @@ Observed numbers:
 - Cartridge follow-up latency: `268.13 ms`
 - One-time build time: `121.36 s`
 
-## Ignored But Generated Locally
+## Other Generated Artifacts
 
-This benchmark also produces many local artifacts that are intentionally not checked into Git:
+This benchmark also produces many local artifacts (not in the repo):
 
 - per-budget checkpoints
 - JSONL predictions
@@ -257,4 +257,4 @@ This benchmark also produces many local artifacts that are intentionally not che
 - full run manifests
 - vLLM logs
 
-Those are still written under `outputs/<experiment>/runs/<run_id>/`, but this README does not link to them because they are ignored by Git.
+Those are written under `outputs/<experiment>/runs/<run_id>/`.
