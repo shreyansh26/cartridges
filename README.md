@@ -203,9 +203,49 @@ The active benchmark path lives in these tracked files:
 ## Current Limits
 
 - The benchmark currently assumes the corpus fits into exactly one chunk.
-- The tracked reports are checked in, but most generated artifacts are intentionally ignored:
-  checkpoints, JSONL predictions, bootstrap intermediate files, and per-run manifests stay local.
-- The compression win primarily appears in prefill and follow-up latency, not decode throughput.
+
+## Handling Larger Corpora
+
+If the corpus does not fit into one chunk, the clean extension is not "make one giant cartridge anyway". The right next step is to turn the current single-cartridge pipeline into a routed multi-cartridge system.
+
+```mermaid
+flowchart TD
+    A[Long corpus]
+    B[Chunk into windows]
+    C[Train one cartridge per chunk]
+    D[Build chunk retrieval index]
+    E[Question]
+    F[Retrieve top chunk or top-k chunks]
+    G[Route to one cartridge]
+    H[Run cartridge inference]
+    I[Answer]
+
+    A --> B --> C
+    B --> D
+    E --> F
+    D --> F
+    F --> G --> H --> I
+    C --> G
+```
+
+The implementation path would be:
+
+1. Let [build_text_manifest(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/data/text_dataset.py) emit multiple chunks instead of forcing a single one.
+2. Replace [load_single_chunk_text(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/data/text_dataset.py) with a loader that returns all chunk records.
+3. Run bootstrap generation, teacher answering, supervision building, and [train_cartridge(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/train/cartridge.py) independently for each chunk.
+4. Save one cartridge artifact per `(chunk_id, budget)`.
+5. Build a lightweight retrieval index over the raw chunk texts.
+6. At question time, retrieve the best chunk and load only that chunk's cartridge for inference.
+
+The clean first version is top-1 routing: one question selects one chunk, then one cartridge answers it. That matches the current repo design because [run_cartridge_eval(...)](/mnt/ssd1/shreyansh/home_dir/cartridges/src/cartridges/eval/cartridge.py) assumes a single injected cache at inference time.
+
+If a task genuinely needs evidence from multiple chunks, then the next layer is a router plus a fusion strategy. The simplest safe version is:
+
+- retrieve top-k chunks
+- rerank them for the question
+- either choose the best single chunk, or fall back to a short raw-context baseline over only those top-k chunks
+
+That is the real architectural limitation in the current repo: there is no retrieval-and-routing layer yet. Everything else in the benchmark is already compatible with a per-chunk cartridge workflow.
 
 ## Checked-In Benchmark Reports
 
